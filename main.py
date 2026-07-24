@@ -55,6 +55,9 @@ TASK_TAG_ASYNC = os.environ.get("EASY_MODE_MCP_TASK_TAG_ASYNC", "Async")
 TASK_TAG_SYNC = os.environ.get("EASY_MODE_MCP_TASK_TAG_SYNC", "Sync")
 TASK_TAG_SYNC_FALLBACK = os.environ.get("EASY_MODE_MCP_TASK_TAG_SYNC_FALLBACK", "Sync fallback")
 
+# Prompted variable name used to pass the MCP session ID to runbooks
+SESSION_ID_VAR = os.environ.get("EASY_MODE_MCP_SESSION_ID_VAR", "Project.SessionId")
+
 logging.info(f"Base URL: {base_url}")
 
 class InterventionResponse(BaseModel):
@@ -506,9 +509,19 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
             type=str,
         )
 
+    # Separate the session ID variable (if present) from the prompted variables
+    # so it is not exposed as a tool argument.
+    session_id_var = None
+    visible_prompted_variables = []
+    for var in prompted_variables:
+        if var["name"] == SESSION_ID_VAR:
+            session_id_var = var
+        else:
+            visible_prompted_variables.append(var)
+
     # Build a mapping from sanitized param name to variable info
     param_to_var = {}
-    for var in prompted_variables:
+    for var in visible_prompted_variables:
         param_name = _sanitize_param_name(var["name"])
         param_to_var[param_name] = var
 
@@ -528,6 +541,11 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
         variable_values, var_error = await _collect_variable_values(kwargs, param_to_var, ctx, use_var_id=is_cac)
         if var_error:
             return var_error
+
+        # Inject the session ID into variable values if the prompted variable exists
+        if session_id_var and ctx:
+            sid_key = session_id_var["id"] if is_cac else session_id_var["name"]
+            variable_values[sid_key] = ctx.session_id or ""
 
         resolved_tenant_id, tenant_error = await _resolve_tenant_for_tool(kwargs, is_tenanted, multi_tenancy_mode, project_id, env_id)
         if tenant_error:

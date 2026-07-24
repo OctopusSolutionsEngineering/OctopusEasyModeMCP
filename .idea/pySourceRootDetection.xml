@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PySourceRootDetectionService">
+    <option name="sourcePathsSet">
+      <set>
+        <option value="$PROJECT_DIR$/fastmcp/examples/smart_home/src" />
+        <option value="$PROJECT_DIR$/fastmcp/examples/atproto_mcp/src" />
+        <option value="$PROJECT_DIR$/fastmcp" />
+        <option value="$PROJECT_DIR$/fastmcp/fastmcp_slim" />
+      </set>
+    </option>
+  </component>
+</project>
