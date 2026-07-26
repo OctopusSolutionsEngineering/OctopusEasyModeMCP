@@ -139,9 +139,6 @@ def _create_auth():
     )
 
 
-
-
-
 async def _periodic_refresh() -> None:
     """Periodically re-register all runbook tools every 5 minutes."""
     while True:
@@ -259,7 +256,7 @@ async def _poll_task_to_completion(client: httpx.AsyncClient, task_id: str, ctx:
             if stop_result:
                 return stop_result
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(10)
 
 
 async def _run_runbook(runbook_id: str, environment_id: str, variable_values: dict[str, str] | None = None, ctx: Context | None = None, tenant_id: str | None = None, project_id: str | None = None, is_cac: bool = False, git_ref: str | None = None, runbook_slug: str | None = None) -> dict:
@@ -303,7 +300,7 @@ async def _run_runbook(runbook_id: str, environment_id: str, variable_values: di
         return await _poll_task_to_completion(client, task_id, ctx)
 
 
-def _build_tool_params(single_env: bool, EnvironmentEnum, param_to_var: dict, is_tenanted: bool, multi_tenancy_mode: str, is_cac: bool = False, default_git_ref: str = "", BranchEnum=None) -> list[inspect.Parameter]:
+def _build_tool_params(single_env: bool, environment_enum, param_to_var: dict, is_tenanted: bool, multi_tenancy_mode: str, is_cac: bool = False, default_git_ref: str = "", branch_enum=None) -> list[inspect.Parameter]:
     """Build the list of inspect.Parameter objects for a runbook tool."""
     if single_env:
         params = [
@@ -312,7 +309,7 @@ def _build_tool_params(single_env: bool, EnvironmentEnum, param_to_var: dict, is
     else:
         params = [
             inspect.Parameter("ctx", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Context),
-            inspect.Parameter("environment_name", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=EnvironmentEnum),
+            inspect.Parameter("environment_name", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=environment_enum),
         ]
 
     for param_name, var in param_to_var.items():
@@ -338,13 +335,13 @@ def _build_tool_params(single_env: bool, EnvironmentEnum, param_to_var: dict, is
             )
         )
 
-    if is_cac and BranchEnum:
+    if is_cac and branch_enum:
         params.append(
             inspect.Parameter(
                 "git_ref",
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 default=default_git_ref or None,
-                annotation=BranchEnum | None,
+                annotation=branch_enum | None,
             )
         )
 
