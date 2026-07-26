@@ -108,6 +108,19 @@ def publish_runbook(url: str, api_key: str, space_id: str, project_name: str, ru
     resp.raise_for_status()
 
 
+def upload_package(url: str, api_key: str, space_id: str, package_path: str) -> None:
+    """Upload a package to the Octopus built-in feed."""
+    headers = {"X-Octopus-ApiKey": api_key}
+    with open(package_path, "rb") as f:
+        resp = httpx.post(
+            f"{url}/api/{space_id}/packages/raw",
+            headers=headers,
+            files={"file": (os.path.basename(package_path), f, "application/zip")},
+            timeout=30,
+        )
+    resp.raise_for_status()
+
+
 @pytest.fixture(scope="module")
 def octopus_environment():
     """Start MSSQL and Octopus containers, apply terraform, and set env vars."""
@@ -160,6 +173,10 @@ def octopus_environment():
         # Publish both runbooks so they have snapshots
         publish_runbook(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, "Test Project", "Backup Database")
         publish_runbook(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, "Test Project", "Deploy Service")
+
+        # Upload a test package to the built-in feed
+        package_path = os.path.join(os.path.dirname(__file__), "packages", "dummy.1.0.0.zip")
+        upload_package(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, package_path)
 
         # Set environment variables used by octopus.py via config.py
         os.environ["EASY_MODE_MCP_OCTOPUS_URL"] = OCTOPUS_URL
@@ -226,3 +243,94 @@ class TestGetAllRunbooks:
             # Database-backed runbooks must have a published snapshot
             if "_git_ref" not in runbook:
                 assert runbook.get("PublishedRunbookSnapshotId") is not None
+
+
+@pytest.mark.integration
+class TestGetProjectPromptedVariables:
+    """Tests for the get_project_prompted_variables function."""
+
+    def test_returns_prompted_variables(self, octopus_environment):
+        """Test that prompted variables are returned for the test project."""
+        from octopus import get_all_runbooks, get_project_prompted_variables
+
+        runbooks = asyncio.run(get_all_runbooks())
+        project_id = runbooks[0]["ProjectId"]
+
+        prompted = asyncio.run(get_project_prompted_variables(project_id))
+
+        assert len(prompted) >= 2
+        names = [v["name"] for v in prompted]
+        assert "DatabaseName" in names
+        assert "NotifyOnCompletion" in names
+
+    def test_prompted_variables_have_expected_fields(self, octopus_environment):
+        """Test that prompted variables contain the expected fields."""
+        from octopus import get_all_runbooks, get_project_prompted_variables
+
+        runbooks = asyncio.run(get_all_runbooks())
+        project_id = runbooks[0]["ProjectId"]
+
+        prompted = asyncio.run(get_project_prompted_variables(project_id))
+
+        for var in prompted:
+            assert "id" in var
+            assert "name" in var
+            assert "label" in var
+            assert "description" in var
+            assert "required" in var
+            assert "default" in var
+
+    def test_prompted_variable_required_flag(self, octopus_environment):
+        """Test that the required flag is correctly set."""
+        from octopus import get_all_runbooks, get_project_prompted_variables
+
+        runbooks = asyncio.run(get_all_runbooks())
+        project_id = runbooks[0]["ProjectId"]
+
+        prompted = asyncio.run(get_project_prompted_variables(project_id))
+
+        db_name_var = next(v for v in prompted if v["name"] == "DatabaseName")
+        assert db_name_var["required"] is True
+        assert db_name_var["label"] == "Database Name"
+
+        notify_var = next(v for v in prompted if v["name"] == "NotifyOnCompletion")
+        assert notify_var["required"] is False
+        assert notify_var["default"] == "false"
+
+
+@pytest.mark.integration
+class TestGetLatestPackageVersion:
+    """Tests for the get_latest_package_version function."""
+
+    def test_returns_version_for_uploaded_package(self, octopus_environment):
+        """Test that get_latest_package_version returns the correct version."""
+        from octopus import get_latest_package_version, octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID
+
+        async def _get_version():
+            # Get the built-in feed ID
+            async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+                resp = await client.get(f"/api/{OCTOPUS_SPACE_ID}/feeds", params={"feedType": "BuiltIn"})
+                resp.raise_for_status()
+                feeds = resp.json()["Items"]
+                feed_id = feeds[0]["Id"]
+
+                return await get_latest_package_version(client, feed_id, "dummy")
+
+        version = asyncio.run(_get_version())
+        assert version == "1.0.0"
+
+    def test_returns_empty_for_nonexistent_package(self, octopus_environment):
+        """Test that get_latest_package_version returns empty string for unknown package."""
+        from octopus import get_latest_package_version, octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID
+
+        async def _get_version():
+            async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+                resp = await client.get(f"/api/{OCTOPUS_SPACE_ID}/feeds", params={"feedType": "BuiltIn"})
+                resp.raise_for_status()
+                feeds = resp.json()["Items"]
+                feed_id = feeds[0]["Id"]
+
+                return await get_latest_package_version(client, feed_id, "nonexistent-package")
+
+        version = asyncio.run(_get_version())
+        assert version == ""
