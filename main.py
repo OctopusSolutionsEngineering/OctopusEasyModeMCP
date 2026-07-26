@@ -13,12 +13,13 @@ from fastmcp.server.auth.providers.azure import AzureProvider
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
 from pydantic import BaseModel, Field
 
+from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, AUTH_TYPE, AUTH_ENABLED, TASK_TAG_GROUP, TASK_TAG_ASYNC, TASK_TAG_SYNC, TASK_TAG_SYNC_FALLBACK, SESSION_ID_VAR, BASE_URL, OCTOPUS_PROJECTS_CSV
+
 from fastmcp import FastMCP, Context
 from fastmcp.server.context import AcceptedElicitation
 from fastmcp.server.tasks import TaskConfig
 
 from octopus import (
-    OCTOPUS_URL,
     get_authenticated_headers,
     get_all_runbooks,
     get_project_prompted_variables,
@@ -43,28 +44,11 @@ from octopus import (
     create_runbook_snapshot,
 )
 
-base_url = os.environ.get("EASY_MODE_MCP_BASE_URL", "http://localhost:8000")
 
+def _parse_csv_env(value: str) -> list[str]:
+    """Parse a comma-separated string into a list of trimmed, non-empty strings."""
+    return [name.strip() for name in value.split(",") if name.strip()]
 
-def _parse_csv_env(var_name: str) -> list[str]:
-    """Parse a comma-separated environment variable into a list of trimmed, non-empty strings."""
-    return [name.strip() for name in os.environ.get(var_name, "").split(",") if name.strip()]
-
-
-# Auth type: "google", "github", "azure", "oauth_proxy", or "none" (default: "google")
-AUTH_TYPE = os.environ.get("EASY_MODE_MCP_AUTH_TYPE", "google").lower()
-AUTH_ENABLED = AUTH_TYPE != "none"
-
-# Task mode tag configuration
-TASK_TAG_GROUP = os.environ.get("EASY_MODE_MCP_TASK_TAG_GROUP", "MCP Tasks")
-TASK_TAG_ASYNC = os.environ.get("EASY_MODE_MCP_TASK_TAG_ASYNC", "Async")
-TASK_TAG_SYNC = os.environ.get("EASY_MODE_MCP_TASK_TAG_SYNC", "Sync")
-TASK_TAG_SYNC_FALLBACK = os.environ.get("EASY_MODE_MCP_TASK_TAG_SYNC_FALLBACK", "Sync fallback")
-
-# Prompted variable name used to pass the MCP session ID to runbooks
-SESSION_ID_VAR = os.environ.get("EASY_MODE_MCP_SESSION_ID_VAR", "Project.SessionId")
-
-logging.info(f"Base URL: {base_url}")
 
 class InterventionResponse(BaseModel):
     """Choose whether to proceed with or abort the deployment, and provide any instructions."""
@@ -72,7 +56,7 @@ class InterventionResponse(BaseModel):
     instructions: str = Field(default="", title="Instructions", description="Additional instructions or notes for this intervention")
 
 # Optional: comma-separated list of project names to expose (empty = all projects)
-OCTOPUS_PROJECT_FILTER = _parse_csv_env("EASY_MODE_MCP_OCTOPUS_PROJECTS")
+OCTOPUS_PROJECT_FILTER = _parse_csv_env(OCTOPUS_PROJECTS_CSV)
 
 def _create_auth():
     """Create the OAuth auth provider based on EASY_MODE_MCP_AUTH_TYPE."""
@@ -93,7 +77,7 @@ def _create_auth():
         return GitHubProvider(
             client_id=os.environ["EASY_MODE_MCP_GITHUB_CLIENT_ID"],
             client_secret=os.environ["EASY_MODE_MCP_GITHUB_CLIENT_SECRET"],
-            base_url=base_url,
+            base_url=BASE_URL,
             required_scopes=["read:user","user:email"],
             client_storage=storage_backend,
             jwt_signing_key=os.environ["EASY_MODE_MCP_JWT_SIGNING_KEY"],
@@ -104,7 +88,7 @@ def _create_auth():
             client_id=os.environ["EASY_MODE_MCP_AZURE_CLIENT_ID"],
             client_secret=os.environ["EASY_MODE_MCP_AZURE_CLIENT_SECRET"],
             tenant_id=os.environ["EASY_MODE_MCP_AZURE_TENANT_ID"],
-            base_url=base_url,
+            base_url=BASE_URL,
             required_scopes=["openid", "email", "profile"],
             client_storage=storage_backend,
             jwt_signing_key=os.environ["EASY_MODE_MCP_JWT_SIGNING_KEY"],
@@ -127,7 +111,7 @@ def _create_auth():
             upstream_client_secret=os.environ.get("EASY_MODE_MCP_OAUTH_CLIENT_SECRET"),
             upstream_revocation_endpoint=os.environ.get("EASY_MODE_MCP_OAUTH_REVOCATION_ENDPOINT"),
             token_verifier=token_verifier,
-            base_url=base_url,
+            base_url=BASE_URL,
             client_storage=storage_backend,
             jwt_signing_key=os.environ["EASY_MODE_MCP_JWT_SIGNING_KEY"],
         )
@@ -136,7 +120,7 @@ def _create_auth():
     return AutoRegisterGoogleProvider(
         client_id=os.environ["EASY_MODE_MCP_GOOGLE_CLIENT_ID"],
         client_secret=os.environ["EASY_MODE_MCP_GOOGLE_CLIENT_SECRET"],
-        base_url=base_url,
+        base_url=BASE_URL,
         required_scopes=["openid", "email", "profile"],
         client_storage=storage_backend,
         jwt_signing_key=os.environ["EASY_MODE_MCP_JWT_SIGNING_KEY"],
@@ -738,6 +722,7 @@ async def register_all_runbook_tools() -> None:
 
         _register_runbook_tool(runbook, runbook_environments, prompted, branch_names=project_branches.get(runbook.get("ProjectId", "")))
 
+logging.info(f"Base URL: {BASE_URL}")
 
 auth = _create_auth()
 
