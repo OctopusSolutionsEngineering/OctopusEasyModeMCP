@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install testcontainers pytest pytest-asyncio
+          pip install testcontainers pytest
 
       - name: Run integration tests
         env:
