@@ -139,10 +139,7 @@ def _create_auth():
     )
 
 
-auth = _create_auth()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 async def _periodic_refresh() -> None:
@@ -165,9 +162,6 @@ async def _app_lifespan(app: FastMCP):
         yield
     finally:
         task.cancel()
-
-
-mcp = FastMCP("OctopusEasyMode", auth=auth, lifespan=_app_lifespan)
 
 
 def _sanitize_tool_name(name: str) -> str:
@@ -672,6 +666,13 @@ async def register_all_runbook_tools() -> None:
 
         _register_runbook_tool(runbook, runbook_environments, prompted, branch_names=project_branches.get(runbook.get("ProjectId", "")))
 
+
+auth = _create_auth()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+mcp = FastMCP("OctopusEasyMode", auth=auth, lifespan=_app_lifespan)
 
 # Register tools at import time by running the async setup
 asyncio.run(register_all_runbook_tools())
