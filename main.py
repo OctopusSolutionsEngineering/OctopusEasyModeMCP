@@ -1,47 +1,30 @@
+import asyncio
+import inspect
+import logging
 import os
 import re
-import logging
-import inspect
-import httpx
-import asyncio
-from enum import Enum
 from contextlib import asynccontextmanager
+from enum import Enum
 
-from auto_register_provider import AutoRegisterGoogleProvider
-from fastmcp.server.auth.providers.github import GitHubProvider
-from fastmcp.server.auth.providers.azure import AzureProvider
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
-from pydantic import BaseModel, Field
-
-from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, AUTH_TYPE, AUTH_ENABLED, TASK_TAG_GROUP, TASK_TAG_ASYNC, TASK_TAG_SYNC, TASK_TAG_SYNC_FALLBACK, SESSION_ID_VAR, BASE_URL, OCTOPUS_PROJECTS_CSV
-
-from fastmcp import FastMCP, Context
+from fastmcp.server.auth.providers.azure import AzureProvider
+from fastmcp.server.auth.providers.github import GitHubProvider
 from fastmcp.server.context import AcceptedElicitation
 from fastmcp.server.tasks import TaskConfig
 
+from auto_register_provider import AutoRegisterGoogleProvider
+from config import AUTH_TYPE, TASK_TAG_GROUP, TASK_TAG_ASYNC, TASK_TAG_SYNC, SESSION_ID_VAR, BASE_URL, \
+    OCTOPUS_PROJECTS_CSV
+from fastmcp import FastMCP, Context
 from octopus import (
-    get_authenticated_headers,
     get_all_runbooks,
     get_project_prompted_variables,
     get_project_branches,
-    create_runbook_run,
-    create_cac_runbook_run,
-    get_task_raw_log,
-    get_task_status,
-    get_pending_interruptions,
-    submit_interruption,
-    take_interruption_responsibility,
-    parse_interruption_form,
-    resolve_tenant,
-    get_published_snapshot_id,
     get_environments,
     get_runbook_environments,
-    build_form_values,
-    build_task_result,
     get_project_ids_by_names,
-    resolve_selected_packages,
-    resolve_db_runbook_packages,
-    create_runbook_snapshot,
+    run_runbook,
+    resolve_tenant_for_tool,
 )
 
 
@@ -50,10 +33,6 @@ def _parse_csv_env(value: str) -> list[str]:
     return [name.strip() for name in value.split(",") if name.strip()]
 
 
-class InterventionResponse(BaseModel):
-    """Choose whether to proceed with or abort the deployment, and provide any instructions."""
-    action: str = Field(title="Action", description="Choose whether to proceed with or reject the deployment", json_schema_extra={"enum": ["Proceed", "Reject Deployment"]})
-    instructions: str = Field(default="", title="Instructions", description="Additional instructions or notes for this intervention")
 
 def _create_auth():
     """Create the OAuth auth provider based on EASY_MODE_MCP_AUTH_TYPE."""
@@ -159,130 +138,6 @@ def _sanitize_param_name(name: str) -> str:
     return sanitized.strip("_").lower()
 
 
-async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ctx: Context, task_id: str, task: dict) -> dict | None:
-    """Handle a single manual intervention. Returns a result dict if the task should stop, else None."""
-    instructions, notes_element_id, result_element_id = parse_interruption_form(interruption)
-
-    title = interruption.get("Title", "Manual Intervention")
-    message = f"**{title}**\n\n{instructions}" if instructions else title
-
-    # Ask the user to take responsibility or cancel
-    responsibility_result = await ctx.elicit(
-        message=f"{message}\n\nDo you want to take responsibility for this intervention?",
-        response_type=["Assign to me", "Cancel"],
-        response_title="Responsibility",
-        response_description="Choose whether to assign this intervention to yourself or cancel",
-    )
-
-    if not isinstance(responsibility_result, AcceptedElicitation) or responsibility_result.data == "Cancel":
-        logger.info(f"User cancelled taking responsibility for interruption '{interruption['Id']}'")
-        return {
-            "status": "Cancelled",
-            "taskId": task_id,
-            "description": task.get("Description", ""),
-            "errorMessage": "User declined to take responsibility for the manual intervention.",
-        }
-
-    # Take responsibility and elicit a response
-    await take_interruption_responsibility(client, interruption['Id'])
-    result = await ctx.elicit(
-        message=message,
-        response_type=InterventionResponse,
-    )
-
-    if isinstance(result, AcceptedElicitation):
-        action = result.data.action
-        user_instructions = result.data.instructions
-    else:
-        action = "Reject Deployment"
-        user_instructions = ""
-
-    notes_text = f"Responded via MCP: {action}"
-    if user_instructions:
-        notes_text += f"\nInstructions: {user_instructions}"
-
-    submit_payload = {
-        "Instructions": None,
-        "Notes": notes_text,
-        "Result": action,
-    }
-
-    logger.info(f"Submitting intervention with payload: {submit_payload}")
-    await submit_interruption(client, interruption['Id'], submit_payload)
-    logger.info(f"Manual intervention '{title}' resolved with: {action}")
-    return None
-
-
-async def _handle_pending_interventions(client: httpx.AsyncClient, task_id: str, task: dict, ctx: Context) -> dict | None:
-    """Process all pending interventions for a task. Returns a result dict if the task should stop."""
-    interruptions = await get_pending_interruptions(client, task_id)
-    for interruption in interruptions:
-        if not interruption.get("IsPending"):
-            continue
-        logger.info(f"Interruption details: {interruption}")
-        stop_result = await _handle_intervention(client, interruption, ctx, task_id, task)
-        if stop_result:
-            return stop_result
-    return None
-
-
-async def _poll_task_to_completion(client: httpx.AsyncClient, task_id: str, ctx: Context | None = None) -> dict:
-    """Poll a server task until it completes, handling interventions along the way."""
-    while True:
-        task = await get_task_status(client, task_id)
-        state = task.get("State")
-
-        if state in ("Success", "Failed", "Canceled", "TimedOut"):
-            raw_log = await get_task_raw_log(client, task_id)
-            return build_task_result(task, task_id, raw_log)
-
-        if task.get("HasPendingInterruptions") and ctx:
-            stop_result = await _handle_pending_interventions(client, task_id, task, ctx)
-            if stop_result:
-                return stop_result
-
-        await asyncio.sleep(10)
-
-
-async def _run_runbook(runbook_id: str, environment_id: str, variable_values: dict[str, str] | None = None, ctx: Context | None = None, tenant_id: str | None = None, project_id: str | None = None, is_cac: bool = False, git_ref: str | None = None, runbook_slug: str | None = None) -> dict:
-    """Trigger a runbook run and poll for completion, returning the final task status."""
-    headers = await get_authenticated_headers()
-
-    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
-        if is_cac:
-            # Config-as-code runbooks use a different run endpoint
-            form_values = {}
-            if variable_values:
-                # For CaC runbooks, map variable names directly as form values
-                form_values = dict(variable_values)
-
-            # Resolve latest package versions for the runbook
-            selected_packages = await resolve_selected_packages(client, project_id, git_ref, runbook_slug)
-
-            task_id = await create_cac_runbook_run(
-                client, project_id, git_ref, runbook_slug,
-                environment_id, form_values=form_values, tenant_id=tenant_id,
-                selected_packages=selected_packages,
-            )
-        else:
-            # Database-backed runbooks: create a new snapshot with latest packages
-            selected_packages = await resolve_db_runbook_packages(client, runbook_id)
-            if selected_packages:
-                snapshot_id = await create_runbook_snapshot(client, runbook_id, selected_packages)
-            else:
-                # Fall back to published snapshot if no packages to resolve
-                snapshot_id = await get_published_snapshot_id(client, runbook_id)
-
-            if not snapshot_id:
-                return {"status": "Failed", "error": "Runbook has no published snapshot"}
-
-            form_values = {}
-            if variable_values:
-                form_values = await build_form_values(client, snapshot_id, environment_id, variable_values)
-
-            task_id = await create_runbook_run(client, runbook_id, snapshot_id, environment_id, form_values, tenant_id=tenant_id)
-
-        return await _poll_task_to_completion(client, task_id, ctx)
 
 
 def _build_tool_params(single_env: bool, environment_enum, param_to_var: dict, is_tenanted: bool, multi_tenancy_mode: str, is_cac: bool = False, default_git_ref: str = "", branch_enum=None) -> list[inspect.Parameter]:
@@ -426,22 +281,6 @@ async def _collect_variable_values(kwargs: dict, param_to_var: dict, ctx: Contex
     return variable_values, None
 
 
-async def _resolve_tenant_for_tool(kwargs: dict, is_tenanted: bool, multi_tenancy_mode: str, project_id: str, env_id: str) -> tuple[str | None, dict | None]:
-    """Resolve tenant name from kwargs to a tenant ID."""
-    if not is_tenanted:
-        return None, None
-
-    tenant_name_val = kwargs.get("tenant_name")
-    if tenant_name_val:
-        headers = await get_authenticated_headers()
-        async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as tenant_client:
-            resolved_tenant_id, error = await resolve_tenant(tenant_client, tenant_name_val, project_id, env_id)
-            if error:
-                return None, {"status": "Failed", "error": error}
-            return resolved_tenant_id, None
-    elif multi_tenancy_mode == "Tenanted":
-        return None, {"status": "Failed", "error": "Tenant name is required for this runbook."}
-    return None, None
 
 
 def _split_session_id_variable(prompted_variables: list[dict]) -> tuple[dict | None, list[dict]]:
@@ -559,13 +398,13 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
         # Inject the session ID into variable values if the prompted variable exists
         _inject_session_id(variable_values, session_id_var, ctx, is_cac)
 
-        resolved_tenant_id, tenant_error = await _resolve_tenant_for_tool(kwargs, is_tenanted, multi_tenancy_mode, project_id, env_id)
+        resolved_tenant_id, tenant_error = await resolve_tenant_for_tool(kwargs.get("tenant_name"), is_tenanted, multi_tenancy_mode, project_id, env_id)
         if tenant_error:
             return tenant_error
 
         effective_git_ref = kwargs.get("git_ref", default_git_ref) if is_cac else default_git_ref
 
-        return await _run_runbook(runbook_id, env_id, variable_values if variable_values else None, ctx=ctx, tenant_id=resolved_tenant_id, project_id=project_id, is_cac=is_cac, git_ref=effective_git_ref, runbook_slug=runbook_slug)
+        return await run_runbook(runbook_id, env_id, variable_values if variable_values else None, ctx=ctx, tenant_id=resolved_tenant_id, project_id=project_id, is_cac=is_cac, git_ref=effective_git_ref, runbook_slug=runbook_slug)
 
     run_tool.__doc__ = _build_tool_docstring(description, project_id, env_help, single_env, is_tenanted, multi_tenancy_mode, param_to_var, is_cac=is_cac, default_git_ref=default_git_ref)
     run_tool.__name__ = tool_name

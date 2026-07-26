@@ -1,11 +1,15 @@
 """Octopus Deploy API client functions."""
 
 import os
+import asyncio
 import logging
 
 import httpx
+from pydantic import BaseModel, Field
 
 from fastmcp.server.dependencies import get_access_token
+from fastmcp import Context
+from fastmcp.server.context import AcceptedElicitation
 
 from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, AUTH_TYPE, AUTH_ENABLED
 
@@ -912,4 +916,154 @@ async def build_form_values(client: httpx.AsyncClient, snapshot_id: str, environ
     logger.info(f"Form elements: {[(e.get('Name'), e.get('Control', {})) for e in elements]}")
     logger.info(f"Form default values: {form_values}")
     return map_variables_to_form_values(variable_values, elements, form_values)
+
+
+class InterventionResponse(BaseModel):
+    """Choose whether to proceed with or abort the deployment, and provide any instructions."""
+    action: str = Field(title="Action", description="Choose whether to proceed with or reject the deployment", json_schema_extra={"enum": ["Proceed", "Reject Deployment"]})
+    instructions: str = Field(default="", title="Instructions", description="Additional instructions or notes for this intervention")
+
+
+async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ctx: Context, task_id: str, task: dict) -> dict | None:
+    """Handle a single manual intervention. Returns a result dict if the task should stop, else None."""
+    instructions, notes_element_id, result_element_id = parse_interruption_form(interruption)
+
+    title = interruption.get("Title", "Manual Intervention")
+    message = f"**{title}**\n\n{instructions}" if instructions else title
+
+    # Ask the user to take responsibility or cancel
+    responsibility_result = await ctx.elicit(
+        message=f"{message}\n\nDo you want to take responsibility for this intervention?",
+        response_type=["Assign to me", "Cancel"],
+        response_title="Responsibility",
+        response_description="Choose whether to assign this intervention to yourself or cancel",
+    )
+
+    if not isinstance(responsibility_result, AcceptedElicitation) or responsibility_result.data == "Cancel":
+        logger.info(f"User cancelled taking responsibility for interruption '{interruption['Id']}'")
+        return {
+            "status": "Cancelled",
+            "taskId": task_id,
+            "description": task.get("Description", ""),
+            "errorMessage": "User declined to take responsibility for the manual intervention.",
+        }
+
+    # Take responsibility and elicit a response
+    await take_interruption_responsibility(client, interruption['Id'])
+    result = await ctx.elicit(
+        message=message,
+        response_type=InterventionResponse,
+    )
+
+    if isinstance(result, AcceptedElicitation):
+        action = result.data.action
+        user_instructions = result.data.instructions
+    else:
+        action = "Reject Deployment"
+        user_instructions = ""
+
+    notes_text = f"Responded via MCP: {action}"
+    if user_instructions:
+        notes_text += f"\nInstructions: {user_instructions}"
+
+    submit_payload = {
+        "Instructions": None,
+        "Notes": notes_text,
+        "Result": action,
+    }
+
+    logger.info(f"Submitting intervention with payload: {submit_payload}")
+    await submit_interruption(client, interruption['Id'], submit_payload)
+    logger.info(f"Manual intervention '{title}' resolved with: {action}")
+    return None
+
+
+async def _handle_pending_interventions(client: httpx.AsyncClient, task_id: str, task: dict, ctx: Context) -> dict | None:
+    """Process all pending interventions for a task. Returns a result dict if the task should stop."""
+    interruptions = await get_pending_interruptions(client, task_id)
+    for interruption in interruptions:
+        if not interruption.get("IsPending"):
+            continue
+        logger.info(f"Interruption details: {interruption}")
+        stop_result = await _handle_intervention(client, interruption, ctx, task_id, task)
+        if stop_result:
+            return stop_result
+    return None
+
+
+async def _poll_task_to_completion(client: httpx.AsyncClient, task_id: str, ctx: Context | None = None) -> dict:
+    """Poll a server task until it completes, handling interventions along the way."""
+    while True:
+        task = await get_task_status(client, task_id)
+        state = task.get("State")
+
+        if state in ("Success", "Failed", "Canceled", "TimedOut"):
+            raw_log = await get_task_raw_log(client, task_id)
+            return build_task_result(task, task_id, raw_log)
+
+        if task.get("HasPendingInterruptions") and ctx:
+            stop_result = await _handle_pending_interventions(client, task_id, task, ctx)
+            if stop_result:
+                return stop_result
+
+        await asyncio.sleep(10)
+
+
+async def run_runbook(runbook_id: str, environment_id: str, variable_values: dict[str, str] | None = None, ctx: Context | None = None, tenant_id: str | None = None, project_id: str | None = None, is_cac: bool = False, git_ref: str | None = None, runbook_slug: str | None = None) -> dict:
+    """Trigger a runbook run and poll for completion, returning the final task status."""
+    headers = await get_authenticated_headers()
+
+    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
+        if is_cac:
+            # Config-as-code runbooks use a different run endpoint
+            form_values = {}
+            if variable_values:
+                # For CaC runbooks, map variable names directly as form values
+                form_values = dict(variable_values)
+
+            # Resolve latest package versions for the runbook
+            selected_packages = await resolve_selected_packages(client, project_id, git_ref, runbook_slug)
+
+            task_id = await create_cac_runbook_run(
+                client, project_id, git_ref, runbook_slug,
+                environment_id, form_values=form_values, tenant_id=tenant_id,
+                selected_packages=selected_packages,
+            )
+        else:
+            # Database-backed runbooks: create a new snapshot with latest packages
+            selected_packages = await resolve_db_runbook_packages(client, runbook_id)
+            if selected_packages:
+                snapshot_id = await create_runbook_snapshot(client, runbook_id, selected_packages)
+            else:
+                # Fall back to published snapshot if no packages to resolve
+                snapshot_id = await get_published_snapshot_id(client, runbook_id)
+
+            if not snapshot_id:
+                return {"status": "Failed", "error": "Runbook has no published snapshot"}
+
+            form_values = {}
+            if variable_values:
+                form_values = await build_form_values(client, snapshot_id, environment_id, variable_values)
+
+            task_id = await create_runbook_run(client, runbook_id, snapshot_id, environment_id, form_values, tenant_id=tenant_id)
+
+        return await _poll_task_to_completion(client, task_id, ctx)
+
+
+async def resolve_tenant_for_tool(tenant_name: str | None, is_tenanted: bool, multi_tenancy_mode: str, project_id: str, env_id: str) -> tuple[str | None, dict | None]:
+    """Resolve tenant name to a tenant ID."""
+    if not is_tenanted:
+        return None, None
+
+    if tenant_name:
+        headers = await get_authenticated_headers()
+        async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as tenant_client:
+            resolved_tenant_id, error = await resolve_tenant(tenant_client, tenant_name, project_id, env_id)
+            if error:
+                return None, {"status": "Failed", "error": error}
+            return resolved_tenant_id, None
+    elif multi_tenancy_mode == "Tenanted":
+        return None, {"status": "Failed", "error": "Tenant name is required for this runbook."}
+    return None, None
+
 
