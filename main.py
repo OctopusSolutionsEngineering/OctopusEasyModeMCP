@@ -6,6 +6,9 @@ import re
 from contextlib import asynccontextmanager
 from enum import Enum
 
+import httpx
+from pydantic import BaseModel, Field
+
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
 from fastmcp.server.auth.providers.azure import AzureProvider
 from fastmcp.server.auth.providers.github import GitHubProvider
@@ -23,6 +26,10 @@ from octopus import (
     get_environments,
     get_runbook_environments,
     get_project_ids_by_names,
+    get_pending_interruptions,
+    submit_interruption,
+    take_interruption_responsibility,
+    parse_interruption_form,
     run_runbook,
     resolve_tenant_for_tool,
 )
@@ -136,6 +143,79 @@ def _sanitize_param_name(name: str) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", name)
     sanitized = re.sub(r"^[0-9]", "_", sanitized)
     return sanitized.strip("_").lower()
+
+
+class InterventionResponse(BaseModel):
+    """Choose whether to proceed with or abort the deployment, and provide any instructions."""
+    action: str = Field(title="Action", description="Choose whether to proceed with or reject the deployment", json_schema_extra={"enum": ["Proceed", "Reject Deployment"]})
+    instructions: str = Field(default="", title="Instructions", description="Additional instructions or notes for this intervention")
+
+
+async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ctx: Context, task_id: str, task: dict) -> dict | None:
+    """Handle a single manual intervention. Returns a result dict if the task should stop, else None."""
+    instructions, notes_element_id, result_element_id = parse_interruption_form(interruption)
+
+    title = interruption.get("Title", "Manual Intervention")
+    message = f"**{title}**\n\n{instructions}" if instructions else title
+
+    # Ask the user to take responsibility or cancel
+    responsibility_result = await ctx.elicit(
+        message=f"{message}\n\nDo you want to take responsibility for this intervention?",
+        response_type=["Assign to me", "Cancel"],
+        response_title="Responsibility",
+        response_description="Choose whether to assign this intervention to yourself or cancel",
+    )
+
+    if not isinstance(responsibility_result, AcceptedElicitation) or responsibility_result.data == "Cancel":
+        logger.info(f"User cancelled taking responsibility for interruption '{interruption['Id']}'")
+        return {
+            "status": "Cancelled",
+            "taskId": task_id,
+            "description": task.get("Description", ""),
+            "errorMessage": "User declined to take responsibility for the manual intervention.",
+        }
+
+    # Take responsibility and elicit a response
+    await take_interruption_responsibility(client, interruption['Id'])
+    result = await ctx.elicit(
+        message=message,
+        response_type=InterventionResponse,
+    )
+
+    if isinstance(result, AcceptedElicitation):
+        action = result.data.action
+        user_instructions = result.data.instructions
+    else:
+        action = "Reject Deployment"
+        user_instructions = ""
+
+    notes_text = f"Responded via MCP: {action}"
+    if user_instructions:
+        notes_text += f"\nInstructions: {user_instructions}"
+
+    submit_payload = {
+        "Instructions": None,
+        "Notes": notes_text,
+        "Result": action,
+    }
+
+    logger.info(f"Submitting intervention with payload: {submit_payload}")
+    await submit_interruption(client, interruption['Id'], submit_payload)
+    logger.info(f"Manual intervention '{title}' resolved with: {action}")
+    return None
+
+
+async def _handle_pending_interventions(client: httpx.AsyncClient, task_id: str, task: dict, ctx: Context) -> dict | None:
+    """Process all pending interventions for a task. Returns a result dict if the task should stop."""
+    interruptions = await get_pending_interruptions(client, task_id)
+    for interruption in interruptions:
+        if not interruption.get("IsPending"):
+            continue
+        logger.info(f"Interruption details: {interruption}")
+        stop_result = await _handle_intervention(client, interruption, ctx, task_id, task)
+        if stop_result:
+            return stop_result
+    return None
 
 
 
@@ -404,7 +484,10 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
 
         effective_git_ref = kwargs.get("git_ref", default_git_ref) if is_cac else default_git_ref
 
-        return await run_runbook(runbook_id, env_id, variable_values if variable_values else None, ctx=ctx, tenant_id=resolved_tenant_id, project_id=project_id, is_cac=is_cac, git_ref=effective_git_ref, runbook_slug=runbook_slug)
+        async def intervention_handler(client, task_id, task):
+            return await _handle_pending_interventions(client, task_id, task, ctx)
+
+        return await run_runbook(runbook_id, env_id, variable_values if variable_values else None, intervention_handler=intervention_handler if ctx else None, tenant_id=resolved_tenant_id, project_id=project_id, is_cac=is_cac, git_ref=effective_git_ref, runbook_slug=runbook_slug)
 
     run_tool.__doc__ = _build_tool_docstring(description, project_id, env_help, single_env, is_tenanted, multi_tenancy_mode, param_to_var, is_cac=is_cac, default_git_ref=default_git_ref)
     run_tool.__name__ = tool_name
