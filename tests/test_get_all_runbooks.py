@@ -896,3 +896,91 @@ class TestBuildTaskResult:
 
         assert result["status"] == "Failed"
         assert result["errorMessage"] == "Something went wrong"
+
+
+@pytest.mark.integration
+class TestCaCRunbooks:
+    """Tests for config-as-code runbooks fetched from a git repository."""
+
+    def test_cac_runbooks_are_discovered(self, octopus_environment):
+        """Test that get_all_runbooks includes CaC runbooks from the git repo."""
+        from octopus import get_all_runbooks
+
+        runbooks = asyncio.run(get_all_runbooks())
+
+        # CaC runbooks have a _git_ref field
+        cac_runbooks = [rb for rb in runbooks if "_git_ref" in rb]
+        assert len(cac_runbooks) >= 3
+
+        cac_names = [rb["Name"] for rb in cac_runbooks]
+        assert "Backup Database" in cac_names
+        assert "Deploy Service" in cac_names
+        assert "Manual Intervention Runbook" in cac_names
+
+    def test_cac_runbooks_have_git_ref(self, octopus_environment):
+        """Test that CaC runbooks include the git ref."""
+        from octopus import get_all_runbooks
+
+        runbooks = asyncio.run(get_all_runbooks())
+        cac_runbooks = [rb for rb in runbooks if "_git_ref" in rb]
+
+        for rb in cac_runbooks:
+            assert rb["_git_ref"] == "main"
+
+    def test_cac_runbooks_have_expected_fields(self, octopus_environment):
+        """Test that CaC runbooks contain expected fields."""
+        from octopus import get_all_runbooks
+
+        runbooks = asyncio.run(get_all_runbooks())
+        cac_runbooks = [rb for rb in runbooks if "_git_ref" in rb]
+
+        for rb in cac_runbooks:
+            assert "Id" in rb
+            assert "Name" in rb
+            assert "ProjectId" in rb
+            assert "Slug" in rb
+
+    def test_cac_project_branches(self, octopus_environment):
+        """Test that get_project_branches returns branches for the CaC project."""
+        from octopus import get_all_runbooks, get_project_branches
+
+        runbooks = asyncio.run(get_all_runbooks())
+        cac_runbooks = [rb for rb in runbooks if "_git_ref" in rb]
+        assert len(cac_runbooks) > 0
+
+        project_id = cac_runbooks[0]["ProjectId"]
+        branches = asyncio.run(get_project_branches(project_id))
+
+        assert isinstance(branches, list)
+        assert "main" in branches
+
+    def test_cac_prompted_variables(self, octopus_environment):
+        """Test that get_project_prompted_variables works for CaC projects."""
+        from octopus import get_all_runbooks, get_project_prompted_variables
+
+        runbooks = asyncio.run(get_all_runbooks())
+        cac_runbooks = [rb for rb in runbooks if "_git_ref" in rb]
+        assert len(cac_runbooks) > 0
+
+        project_id = cac_runbooks[0]["ProjectId"]
+        git_ref = cac_runbooks[0]["_git_ref"]
+
+        prompted = asyncio.run(get_project_prompted_variables(project_id, git_ref=git_ref))
+
+        assert len(prompted) >= 2
+        names = [v["name"] for v in prompted]
+        assert "DatabaseName" in names
+        assert "NotifyOnCompletion" in names
+
+    def test_cac_runbook_environments(self, octopus_environment):
+        """Test that get_runbook_environments works for CaC runbooks."""
+        from octopus import get_all_runbooks, get_runbook_environments
+
+        runbooks = asyncio.run(get_all_runbooks())
+        cac_runbooks = [rb for rb in runbooks if "_git_ref" in rb]
+        deploy_runbook = next(rb for rb in cac_runbooks if rb["Name"] == "Deploy Service")
+
+        environments = asyncio.run(get_runbook_environments(deploy_runbook))
+
+        assert len(environments) >= 2
+
