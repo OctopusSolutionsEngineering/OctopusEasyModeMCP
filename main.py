@@ -55,9 +55,6 @@ class InterventionResponse(BaseModel):
     action: str = Field(title="Action", description="Choose whether to proceed with or reject the deployment", json_schema_extra={"enum": ["Proceed", "Reject Deployment"]})
     instructions: str = Field(default="", title="Instructions", description="Additional instructions or notes for this intervention")
 
-# Optional: comma-separated list of project names to expose (empty = all projects)
-OCTOPUS_PROJECT_FILTER = _parse_csv_env(OCTOPUS_PROJECTS_CSV)
-
 def _create_auth():
     """Create the OAuth auth provider based on EASY_MODE_MCP_AUTH_TYPE."""
     if AUTH_TYPE == "none":
@@ -613,11 +610,12 @@ async def _remove_all_tools() -> None:
 
 async def _filter_runbooks_by_project(runbooks: list[dict]) -> list[dict]:
     """Filter runbooks to only those belonging to configured project names."""
-    if not OCTOPUS_PROJECT_FILTER:
+    project_filter = _parse_csv_env(OCTOPUS_PROJECTS_CSV)
+    if not project_filter:
         return runbooks
-    allowed_project_ids = await get_project_ids_by_names(OCTOPUS_PROJECT_FILTER)
+    allowed_project_ids = await get_project_ids_by_names(project_filter)
     filtered = [rb for rb in runbooks if rb.get("ProjectId") in allowed_project_ids]
-    logger.info(f"Filtered to {len(filtered)} runbooks from projects: {OCTOPUS_PROJECT_FILTER}")
+    logger.info(f"Filtered to {len(filtered)} runbooks from projects: {project_filter}")
     return filtered
 
 
