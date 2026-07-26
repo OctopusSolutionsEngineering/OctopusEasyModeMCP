@@ -170,9 +170,10 @@ def octopus_environment():
         # Populate the space with projects and runbooks
         run_terraform("terraform/space_population", OCTOPUS_URL, OCTOPUS_API_KEY, space_id)
 
-        # Publish both runbooks so they have snapshots
+        # Publish runbooks so they have snapshots
         publish_runbook(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, "Test Project", "Backup Database")
         publish_runbook(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, "Test Project", "Deploy Service")
+        publish_runbook(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, "Test Project", "Manual Intervention Runbook")
 
         # Upload a test package to the built-in feed
         package_path = os.path.join(os.path.dirname(__file__), "packages", "dummy.1.0.0.zip")
@@ -334,3 +335,544 @@ class TestGetLatestPackageVersion:
 
         version = asyncio.run(_get_version())
         assert version == ""
+
+
+@pytest.mark.integration
+class TestGetTaskStatusAndLog:
+    """Tests for get_task_status and get_task_raw_log functions."""
+
+    def test_task_status_after_runbook_run(self, octopus_environment):
+        """Test that get_task_status returns valid status for a completed task."""
+        from octopus import (
+            get_task_status, octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
+            create_runbook_run, get_published_snapshot_id,
+        )
+
+        async def _run_and_check():
+            headers = octopus_headers()
+            async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
+                # Find the Backup Database runbook
+                resp = await client.get(f"/api/{OCTOPUS_SPACE_ID}/runbooks", params={"take": 100})
+                resp.raise_for_status()
+                runbooks = resp.json()["Items"]
+                runbook = next(rb for rb in runbooks if rb["Name"] == "Backup Database")
+
+                # Get its published snapshot
+                snapshot_id = await get_published_snapshot_id(client, runbook["Id"])
+                assert snapshot_id is not None
+
+                # Get environment ID
+                env_id = runbook["Environments"][0]
+
+                # Run the runbook
+                task_id = await create_runbook_run(
+                    client, runbook["Id"], snapshot_id, env_id, {}, tenant_id=None
+                )
+                assert task_id
+
+                # Poll until complete
+                import asyncio as aio
+                for _ in range(60):
+                    task = await get_task_status(client, task_id)
+                    if task.get("State") in ("Success", "Failed", "Canceled", "TimedOut"):
+                        break
+                    await aio.sleep(2)
+
+                return task_id, task
+
+        task_id, task = asyncio.run(_run_and_check())
+
+        assert "State" in task
+        assert task["State"] == "Success"
+        assert task.get("HasBeenPickedUpByProcessor") is True
+
+    def test_task_raw_log_after_runbook_run(self, octopus_environment):
+        """Test that get_task_raw_log returns log content for a completed task."""
+        from octopus import (
+            get_task_status, get_task_raw_log, octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
+            create_runbook_run, get_published_snapshot_id,
+        )
+
+        async def _run_and_get_log():
+            headers = octopus_headers()
+            async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
+                # Find the Backup Database runbook
+                resp = await client.get(f"/api/{OCTOPUS_SPACE_ID}/runbooks", params={"take": 100})
+                resp.raise_for_status()
+                runbooks = resp.json()["Items"]
+                runbook = next(rb for rb in runbooks if rb["Name"] == "Backup Database")
+
+                snapshot_id = await get_published_snapshot_id(client, runbook["Id"])
+                env_id = runbook["Environments"][0]
+
+                task_id = await create_runbook_run(
+                    client, runbook["Id"], snapshot_id, env_id, {}, tenant_id=None
+                )
+
+                # Poll until complete
+                import asyncio as aio
+                for _ in range(60):
+                    task = await get_task_status(client, task_id)
+                    if task.get("State") in ("Success", "Failed", "Canceled", "TimedOut"):
+                        break
+                    await aio.sleep(2)
+
+                raw_log = await get_task_raw_log(client, task_id)
+                return raw_log
+
+        log = asyncio.run(_run_and_get_log())
+
+        assert isinstance(log, str)
+        assert len(log) > 0
+        # The script echoes "Backing up database"
+        assert "Backing up database" in log
+
+
+@pytest.mark.integration
+class TestInterventions:
+    """Tests for get_pending_interruptions, take_interruption_responsibility, and submit_interruption."""
+
+    def test_intervention_workflow(self, octopus_environment):
+        """Test the full intervention workflow: get, take responsibility, and submit."""
+        from octopus import (
+            get_task_status, get_pending_interruptions,
+            take_interruption_responsibility, submit_interruption,
+            octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
+            create_runbook_run, get_published_snapshot_id,
+        )
+
+        async def _run_intervention_workflow():
+            headers = octopus_headers()
+            async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
+                # Find the Manual Intervention Runbook
+                resp = await client.get(f"/api/{OCTOPUS_SPACE_ID}/runbooks", params={"take": 100})
+                resp.raise_for_status()
+                runbooks = resp.json()["Items"]
+                runbook = next(rb for rb in runbooks if rb["Name"] == "Manual Intervention Runbook")
+
+                # Get its published snapshot
+                snapshot_id = await get_published_snapshot_id(client, runbook["Id"])
+                assert snapshot_id is not None
+
+                env_id = runbook["Environments"][0]
+
+                # Run the runbook (will pause at manual intervention)
+                task_id = await create_runbook_run(
+                    client, runbook["Id"], snapshot_id, env_id, {}, tenant_id=None
+                )
+                assert task_id
+
+                # Wait for the task to have pending interruptions
+                import asyncio as aio
+                interruptions = []
+                for _ in range(60):
+                    task = await get_task_status(client, task_id)
+                    if task.get("HasPendingInterruptions"):
+                        interruptions = await get_pending_interruptions(client, task_id)
+                        if interruptions:
+                            break
+                    if task.get("State") in ("Success", "Failed", "Canceled", "TimedOut"):
+                        break
+                    await aio.sleep(2)
+
+                assert len(interruptions) > 0, "No pending interruptions found"
+
+                interruption = interruptions[0]
+                assert interruption.get("IsPending") is True
+                interruption_id = interruption["Id"]
+
+                # Take responsibility
+                await take_interruption_responsibility(client, interruption_id)
+
+                # Submit the intervention (proceed)
+                submit_payload = {
+                    "Instructions": None,
+                    "Notes": "Approved via test",
+                    "Result": "Proceed",
+                }
+                await submit_interruption(client, interruption_id, submit_payload)
+
+                # Wait for task to complete after intervention
+                for _ in range(60):
+                    task = await get_task_status(client, task_id)
+                    if task.get("State") in ("Success", "Failed", "Canceled", "TimedOut"):
+                        break
+                    await aio.sleep(2)
+
+                return task
+
+        task = asyncio.run(_run_intervention_workflow())
+        assert task["State"] == "Success"
+
+    def test_no_interruptions_for_normal_runbook(self, octopus_environment):
+        """Test that a normal runbook has no pending interruptions."""
+        from octopus import (
+            get_task_status, get_pending_interruptions,
+            octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
+            create_runbook_run, get_published_snapshot_id,
+        )
+
+        async def _run_and_check():
+            headers = octopus_headers()
+            async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
+                resp = await client.get(f"/api/{OCTOPUS_SPACE_ID}/runbooks", params={"take": 100})
+                resp.raise_for_status()
+                runbooks = resp.json()["Items"]
+                runbook = next(rb for rb in runbooks if rb["Name"] == "Backup Database")
+
+                snapshot_id = await get_published_snapshot_id(client, runbook["Id"])
+                env_id = runbook["Environments"][0]
+
+                task_id = await create_runbook_run(
+                    client, runbook["Id"], snapshot_id, env_id, {}, tenant_id=None
+                )
+
+                # Wait for completion
+                import asyncio as aio
+                for _ in range(60):
+                    task = await get_task_status(client, task_id)
+                    if task.get("State") in ("Success", "Failed", "Canceled", "TimedOut"):
+                        break
+                    await aio.sleep(2)
+
+                interruptions = await get_pending_interruptions(client, task_id)
+                return interruptions
+
+        interruptions = asyncio.run(_run_and_check())
+        assert len(interruptions) == 0
+
+
+@pytest.mark.integration
+class TestGetEnvironments:
+    """Tests for get_environments."""
+
+    def test_returns_environments(self, octopus_environment):
+        """Test that get_environments returns the environments created by terraform."""
+        from octopus import get_environments
+
+        environments = asyncio.run(get_environments())
+
+        assert len(environments) >= 2
+        env_names = [e["Name"] for e in environments]
+        assert "Development" in env_names
+        assert "Production" in env_names
+
+    def test_environments_have_expected_fields(self, octopus_environment):
+        """Test that environments contain expected fields."""
+        from octopus import get_environments
+
+        environments = asyncio.run(get_environments())
+
+        for env in environments:
+            assert "Id" in env
+            assert "Name" in env
+
+
+@pytest.mark.integration
+class TestGetRunbookEnvironments:
+    """Tests for get_runbook_environments."""
+
+    def test_returns_environments_for_specified_scope(self, octopus_environment):
+        """Test that get_runbook_environments returns correct environments."""
+        from octopus import get_all_runbooks, get_runbook_environments
+
+        runbooks = asyncio.run(get_all_runbooks())
+        deploy_runbook = next(rb for rb in runbooks if rb["Name"] == "Deploy Service")
+
+        environments = asyncio.run(get_runbook_environments(deploy_runbook))
+
+        assert len(environments) >= 2
+
+    def test_single_environment_runbook(self, octopus_environment):
+        """Test runbook scoped to a single environment."""
+        from octopus import get_all_runbooks, get_runbook_environments
+
+        runbooks = asyncio.run(get_all_runbooks())
+        backup_runbook = next(rb for rb in runbooks if rb["Name"] == "Backup Database")
+
+        environments = asyncio.run(get_runbook_environments(backup_runbook))
+
+        assert len(environments) >= 1
+
+
+@pytest.mark.integration
+class TestGetProjectIdsByNames:
+    """Tests for get_project_ids_by_names."""
+
+    def test_returns_project_id_for_known_project(self, octopus_environment):
+        """Test that get_project_ids_by_names returns the correct project ID."""
+        from octopus import get_project_ids_by_names
+
+        project_ids = asyncio.run(get_project_ids_by_names(["Test Project"]))
+
+        assert len(project_ids) == 1
+        project_id = list(project_ids)[0]
+        assert project_id.startswith("Projects-")
+
+    def test_returns_empty_for_unknown_project(self, octopus_environment):
+        """Test that get_project_ids_by_names returns empty set for unknown project."""
+        from octopus import get_project_ids_by_names
+
+        project_ids = asyncio.run(get_project_ids_by_names(["Nonexistent Project XYZ"]))
+
+        assert len(project_ids) == 0
+
+    def test_case_insensitive_match(self, octopus_environment):
+        """Test that project name matching is case-insensitive."""
+        from octopus import get_project_ids_by_names
+
+        project_ids = asyncio.run(get_project_ids_by_names(["test project"]))
+
+        assert len(project_ids) == 1
+
+
+@pytest.mark.integration
+class TestGetPublishedSnapshotId:
+    """Tests for get_published_snapshot_id."""
+
+    def test_returns_snapshot_id_for_published_runbook(self, octopus_environment):
+        """Test that published runbooks have a snapshot ID."""
+        from octopus import get_all_runbooks, get_published_snapshot_id, octopus_headers, OCTOPUS_URL
+
+        runbooks = asyncio.run(get_all_runbooks())
+        runbook = next(rb for rb in runbooks if rb["Name"] == "Backup Database")
+
+        async def _get_snapshot():
+            async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+                return await get_published_snapshot_id(client, runbook["Id"])
+
+        snapshot_id = asyncio.run(_get_snapshot())
+        assert snapshot_id is not None
+        assert snapshot_id.startswith("RunbookSnapshots-")
+
+
+@pytest.mark.integration
+class TestResolveDbRunbookPackages:
+    """Tests for resolve_db_runbook_packages."""
+
+    def test_returns_empty_for_runbook_without_packages(self, octopus_environment):
+        """Test that resolve_db_runbook_packages returns empty list for script-only runbooks."""
+        from octopus import get_all_runbooks, resolve_db_runbook_packages, octopus_headers, OCTOPUS_URL
+
+        runbooks = asyncio.run(get_all_runbooks())
+        runbook = next(rb for rb in runbooks if rb["Name"] == "Backup Database")
+
+        async def _resolve():
+            async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+                return await resolve_db_runbook_packages(client, runbook["Id"])
+
+        packages = asyncio.run(_resolve())
+        assert packages == []
+
+
+@pytest.mark.integration
+class TestRunRunbook:
+    """Tests for the run_runbook function."""
+
+    def test_run_runbook_succeeds(self, octopus_environment):
+        """Test that run_runbook executes a runbook and returns success."""
+        from octopus import get_all_runbooks, get_environments, run_runbook
+
+        runbooks = asyncio.run(get_all_runbooks())
+        runbook = next(rb for rb in runbooks if rb["Name"] == "Backup Database")
+        environments = asyncio.run(get_environments())
+        dev_env = next(e for e in environments if e["Name"] == "Development")
+
+        result = asyncio.run(run_runbook(
+            runbook_id=runbook["Id"],
+            environment_id=dev_env["Id"],
+            project_id=runbook["ProjectId"],
+        ))
+
+        assert result["status"] == "Success"
+        assert "taskId" in result
+        assert "logs" in result
+
+    def test_run_runbook_with_intervention_handler(self, octopus_environment):
+        """Test that run_runbook calls the intervention handler."""
+        from octopus import get_all_runbooks, get_environments, run_runbook, get_pending_interruptions, take_interruption_responsibility, submit_interruption
+
+        runbooks = asyncio.run(get_all_runbooks())
+        runbook = next(rb for rb in runbooks if rb["Name"] == "Manual Intervention Runbook")
+        environments = asyncio.run(get_environments())
+        dev_env = next(e for e in environments if e["Name"] == "Development")
+
+        async def intervention_handler(client, task_id, task):
+            interruptions = await get_pending_interruptions(client, task_id)
+            for interruption in interruptions:
+                if interruption.get("IsPending"):
+                    await take_interruption_responsibility(client, interruption["Id"])
+                    await submit_interruption(client, interruption["Id"], {
+                        "Instructions": None,
+                        "Notes": "Auto-approved by test",
+                        "Result": "Proceed",
+                    })
+            return None
+
+        result = asyncio.run(run_runbook(
+            runbook_id=runbook["Id"],
+            environment_id=dev_env["Id"],
+            project_id=runbook["ProjectId"],
+            intervention_handler=intervention_handler,
+        ))
+
+        assert result["status"] == "Success"
+
+
+@pytest.mark.integration
+class TestResolveTenantForTool:
+    """Tests for resolve_tenant_for_tool."""
+
+    def test_returns_none_when_not_tenanted(self, octopus_environment):
+        """Test that resolve_tenant_for_tool returns None for untenanted runbooks."""
+        from octopus import resolve_tenant_for_tool
+
+        tenant_id, error = asyncio.run(resolve_tenant_for_tool(
+            tenant_name=None,
+            is_tenanted=False,
+            multi_tenancy_mode="Untenanted",
+            project_id="Projects-1",
+            env_id="Environments-1",
+        ))
+
+        assert tenant_id is None
+        assert error is None
+
+    def test_returns_error_when_tenanted_but_no_name(self, octopus_environment):
+        """Test that resolve_tenant_for_tool returns error when tenant is required but not provided."""
+        from octopus import resolve_tenant_for_tool
+
+        tenant_id, error = asyncio.run(resolve_tenant_for_tool(
+            tenant_name=None,
+            is_tenanted=True,
+            multi_tenancy_mode="Tenanted",
+            project_id="Projects-1",
+            env_id="Environments-1",
+        ))
+
+        assert tenant_id is None
+        assert error is not None
+        assert "required" in error["error"].lower()
+
+
+class TestParseInterruptionForm:
+    """Unit tests for parse_interruption_form (no Octopus instance needed)."""
+
+    def test_parses_form_elements(self):
+        """Test that parse_interruption_form extracts instructions and element IDs."""
+        from octopus import parse_interruption_form
+
+        interruption = {
+            "Form": {
+                "Elements": [
+                    {"Name": "instructions", "Control": {"Type": "Paragraph", "Text": "Please approve"}},
+                    {"Name": "notes", "Control": {"Type": "TextArea"}},
+                    {"Name": "result", "Control": {"Type": "Select"}},
+                ]
+            }
+        }
+
+        instructions, notes_id, result_id = parse_interruption_form(interruption)
+
+        assert instructions == "Please approve"
+        assert notes_id == "notes"
+        assert result_id == "result"
+
+    def test_handles_empty_form(self):
+        """Test parse_interruption_form with no form elements."""
+        from octopus import parse_interruption_form
+
+        interruption = {}
+
+        instructions, notes_id, result_id = parse_interruption_form(interruption)
+
+        assert instructions == ""
+        assert notes_id is None
+        assert result_id is None
+
+
+class TestMapVariablesToFormValues:
+    """Unit tests for map_variables_to_form_values (no Octopus instance needed)."""
+
+    def test_maps_by_control_label(self):
+        """Test mapping variables by control label."""
+        from octopus import map_variables_to_form_values
+
+        elements = [
+            {"Name": "elem-1", "Control": {"Label": "DatabaseName", "Name": "db", "Description": ""}},
+        ]
+        form_values = {}
+        variable_values = {"DatabaseName": "mydb"}
+
+        result = map_variables_to_form_values(variable_values, elements, form_values)
+
+        assert result["elem-1"] == "mydb"
+
+    def test_maps_by_control_name(self):
+        """Test mapping variables by control name."""
+        from octopus import map_variables_to_form_values
+
+        elements = [
+            {"Name": "elem-2", "Control": {"Label": "other", "Name": "NotifyFlag", "Description": ""}},
+        ]
+        form_values = {}
+        variable_values = {"NotifyFlag": "true"}
+
+        result = map_variables_to_form_values(variable_values, elements, form_values)
+
+        assert result["elem-2"] == "true"
+
+    def test_preserves_unmatched_defaults(self):
+        """Test that unmatched form values are preserved."""
+        from octopus import map_variables_to_form_values
+
+        elements = [
+            {"Name": "elem-1", "Control": {"Label": "SomeVar", "Name": "", "Description": ""}},
+        ]
+        form_values = {"elem-1": "default_value", "elem-2": "other_default"}
+        variable_values = {}
+
+        result = map_variables_to_form_values(variable_values, elements, form_values)
+
+        assert result["elem-1"] == "default_value"
+        assert result["elem-2"] == "other_default"
+
+
+class TestBuildTaskResult:
+    """Unit tests for build_task_result (no Octopus instance needed)."""
+
+    def test_builds_result_dict(self):
+        """Test that build_task_result creates the expected structure."""
+        from octopus import build_task_result
+
+        task = {
+            "State": "Success",
+            "Description": "Run runbook",
+            "ErrorMessage": "",
+            "Duration": "00:00:05",
+        }
+
+        result = build_task_result(task, "ServerTasks-123", "log output here")
+
+        assert result["status"] == "Success"
+        assert result["taskId"] == "ServerTasks-123"
+        assert result["description"] == "Run runbook"
+        assert result["errorMessage"] == ""
+        assert result["duration"] == "00:00:05"
+        assert result["logs"] == "log output here"
+
+    def test_handles_failed_task(self):
+        """Test build_task_result with a failed task."""
+        from octopus import build_task_result
+
+        task = {
+            "State": "Failed",
+            "Description": "Deploy",
+            "ErrorMessage": "Something went wrong",
+            "Duration": "00:01:30",
+        }
+
+        result = build_task_result(task, "ServerTasks-456", "error logs")
+
+        assert result["status"] == "Failed"
+        assert result["errorMessage"] == "Something went wrong"
