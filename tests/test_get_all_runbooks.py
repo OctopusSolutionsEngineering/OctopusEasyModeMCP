@@ -10,6 +10,7 @@ import tempfile
 import httpx
 import pytest
 from testcontainers.core.container import DockerContainer
+from testcontainers.core.network import Network
 from testcontainers.core.waiting_utils import wait_for_logs
 
 OCTOPUS_API_KEY = "API-ABCDEFGHIJKLMNOPQURTUVWXYZ12345"
@@ -114,56 +115,65 @@ def octopus_environment():
     if not license_key:
         pytest.skip("LICENSE environment variable not set")
 
-    mssql = (
-        DockerContainer("mcr.microsoft.com/mssql/server:2022-latest")
-        .with_env("ACCEPT_EULA", "True")
-        .with_env("SA_PASSWORD", "Password01!")
-    )
-    mssql.start()
-    wait_for_logs(mssql, "SQL Server is now ready for client connections")
+    # Create a shared network for inter-container communication
+    network = Network()
+    network.create()
 
-    mssql_ip = mssql.get_docker_client().bridge_ip(mssql.get_wrapped_container().id)
-
-    octopus = (
-        DockerContainer("octopusdeploy/octopusdeploy")
-        .with_bind_ports(8080, 8080)
-        .with_env("ACCEPT_EULA", "Y")
-        .with_env(
-            "DB_CONNECTION_STRING",
-            f"Server={mssql_ip},1433;Database=OctopusDeploy;User=sa;Password=Password01!",
+    try:
+        mssql = (
+            DockerContainer("mcr.microsoft.com/mssql/server:2022-latest")
+            .with_env("ACCEPT_EULA", "True")
+            .with_env("SA_PASSWORD", "Password01!")
+            .with_network(network)
+            .with_network_aliases("mssql")
         )
-        .with_env("ADMIN_API_KEY", OCTOPUS_API_KEY)
-        .with_env("DISABLE_DIND", "Y")
-        .with_env("ADMIN_USERNAME", "admin")
-        .with_env("ADMIN_PASSWORD", "Password01!")
-        .with_env("OCTOPUS_SERVER_BASE64_LICENSE", license_key)
-        .with_env("ENABLE_USAGE", "N")
-    )
-    octopus.start()
-    wait_for_logs(octopus, "Web server is ready to process requests", timeout=300)
+        mssql.start()
+        wait_for_logs(mssql, "SQL Server is now ready for client connections")
 
-    # Create a space
-    output = run_terraform("terraform/space_creation", OCTOPUS_URL, OCTOPUS_API_KEY)
-    space_id = json.loads(output)["octopus_space_id"]["value"]
+        octopus = (
+            DockerContainer("octopusdeploy/octopusdeploy")
+            .with_bind_ports(8080, 8080)
+            .with_env("ACCEPT_EULA", "Y")
+            .with_env(
+                "DB_CONNECTION_STRING",
+                "Server=mssql,1433;Database=OctopusDeploy;User=sa;Password=Password01!",
+            )
+            .with_env("ADMIN_API_KEY", OCTOPUS_API_KEY)
+            .with_env("DISABLE_DIND", "Y")
+            .with_env("ADMIN_USERNAME", "admin")
+            .with_env("ADMIN_PASSWORD", "Password01!")
+            .with_env("OCTOPUS_SERVER_BASE64_LICENSE", license_key)
+            .with_env("ENABLE_USAGE", "N")
+            .with_network(network)
+            .with_network_aliases("octopus")
+        )
+        octopus.start()
+        wait_for_logs(octopus, "Web server is ready to process requests", timeout=300)
 
-    # Populate the space with projects and runbooks
-    run_terraform("terraform/space_population", OCTOPUS_URL, OCTOPUS_API_KEY, space_id)
+        # Create a space
+        output = run_terraform("terraform/space_creation", OCTOPUS_URL, OCTOPUS_API_KEY)
+        space_id = json.loads(output)["octopus_space_id"]["value"]
 
-    # Publish both runbooks so they have snapshots
-    publish_runbook(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, "Test Project", "Backup Database")
-    publish_runbook(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, "Test Project", "Deploy Service")
+        # Populate the space with projects and runbooks
+        run_terraform("terraform/space_population", OCTOPUS_URL, OCTOPUS_API_KEY, space_id)
 
-    # Set environment variables used by octopus.py via config.py
-    os.environ["EASY_MODE_MCP_OCTOPUS_URL"] = OCTOPUS_URL
-    os.environ["EASY_MODE_MCP_OCTOPUS_API_KEY"] = OCTOPUS_API_KEY
-    os.environ["EASY_MODE_MCP_OCTOPUS_SPACE_ID"] = space_id
-    os.environ["EASY_MODE_MCP_AUTH_TYPE"] = "none"
+        # Publish both runbooks so they have snapshots
+        publish_runbook(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, "Test Project", "Backup Database")
+        publish_runbook(OCTOPUS_URL, OCTOPUS_API_KEY, space_id, "Test Project", "Deploy Service")
 
-    yield {"space_id": space_id, "url": OCTOPUS_URL, "api_key": OCTOPUS_API_KEY}
+        # Set environment variables used by octopus.py via config.py
+        os.environ["EASY_MODE_MCP_OCTOPUS_URL"] = OCTOPUS_URL
+        os.environ["EASY_MODE_MCP_OCTOPUS_API_KEY"] = OCTOPUS_API_KEY
+        os.environ["EASY_MODE_MCP_OCTOPUS_SPACE_ID"] = space_id
+        os.environ["EASY_MODE_MCP_AUTH_TYPE"] = "none"
 
-    # Cleanup
-    octopus.stop()
-    mssql.stop()
+        yield {"space_id": space_id, "url": OCTOPUS_URL, "api_key": OCTOPUS_API_KEY}
+
+    finally:
+        # Cleanup
+        octopus.stop()
+        mssql.stop()
+        network.remove()
 
 
 @pytest.mark.integration
