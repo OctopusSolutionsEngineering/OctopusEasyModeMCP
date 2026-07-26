@@ -1,10 +1,12 @@
 """Integration tests for octopus.get_all_runbooks using testcontainers."""
 
 import asyncio
+import importlib
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 
 import httpx
@@ -184,6 +186,13 @@ def octopus_environment():
         os.environ["EASY_MODE_MCP_OCTOPUS_API_KEY"] = OCTOPUS_API_KEY
         os.environ["EASY_MODE_MCP_OCTOPUS_SPACE_ID"] = space_id
         os.environ["EASY_MODE_MCP_AUTH_TYPE"] = "none"
+
+        # Reload config and octopus modules so they pick up the real env vars
+        # (they may have been imported earlier with dummy values from conftest)
+        if "config" in sys.modules:
+            importlib.reload(sys.modules["config"])
+        if "octopus" in sys.modules:
+            importlib.reload(sys.modules["octopus"])
 
         yield {"space_id": space_id, "url": OCTOPUS_URL, "api_key": OCTOPUS_API_KEY}
 

@@ -19,9 +19,10 @@ from tests.test_get_all_runbooks import octopus_environment  # noqa: F401 - reus
 @pytest.fixture(scope="module")
 def mcp_server(octopus_environment):
     """Import and return the MCP server after the Octopus environment is ready."""
-    # Remove cached main module so it re-registers tools with the live Octopus
-    if "main" in sys.modules:
-        del sys.modules["main"]
+    # Remove cached modules so they re-read env vars set by octopus_environment
+    for mod in ["config", "octopus", "main"]:
+        if mod in sys.modules:
+            del sys.modules[mod]
 
     from main import mcp
     return mcp
