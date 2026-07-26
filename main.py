@@ -549,10 +549,10 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
     single_env = len(environments) == 1
 
     # Create a dynamic Enum for environment names
-    EnvironmentEnum = _build_environment_enum(runbook_name, single_env, env_names)
+    environment_enum = _build_environment_enum(runbook_name, single_env, env_names)
 
     # Create a dynamic Enum for branch names (CaC projects only)
-    BranchEnum = _build_branch_enum(runbook_name, is_cac, branch_names)
+    branch_enum = _build_branch_enum(runbook_name, is_cac, branch_names)
 
     # Separate the session ID variable (if present) from the prompted variables
     # so it is not exposed as a tool argument.
@@ -561,7 +561,7 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
     # Build a mapping from sanitized param name to variable info
     param_to_var = _build_param_to_var(visible_prompted_variables)
 
-    params = _build_tool_params(single_env, EnvironmentEnum, param_to_var, is_tenanted, multi_tenancy_mode, is_cac=is_cac, default_git_ref=default_git_ref, BranchEnum=BranchEnum)
+    params = _build_tool_params(single_env, environment_enum, param_to_var, is_tenanted, multi_tenancy_mode, is_cac=is_cac, default_git_ref=default_git_ref, BranchEnum=branch_enum)
 
     async def run_tool(**kwargs) -> dict:
         """placeholder"""
@@ -588,7 +588,7 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
     run_tool.__doc__ = _build_tool_docstring(description, project_id, env_help, single_env, is_tenanted, multi_tenancy_mode, param_to_var, is_cac=is_cac, default_git_ref=default_git_ref)
     run_tool.__name__ = tool_name
     run_tool.__signature__ = inspect.Signature(params)
-    run_tool.__annotations__ = _build_tool_annotations(single_env, EnvironmentEnum, is_tenanted, multi_tenancy_mode, param_to_var, is_cac=is_cac, BranchEnum=BranchEnum)
+    run_tool.__annotations__ = _build_tool_annotations(single_env, environment_enum, is_tenanted, multi_tenancy_mode, param_to_var, is_cac=is_cac, BranchEnum=branch_enum)
 
     task_config = _resolve_task_config(runbook.get("RunbookTags", []))
 
