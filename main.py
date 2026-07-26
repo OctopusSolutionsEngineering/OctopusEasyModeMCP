@@ -462,6 +462,70 @@ async def _resolve_tenant_for_tool(kwargs: dict, is_tenanted: bool, multi_tenanc
     return None, None
 
 
+def _split_session_id_variable(prompted_variables: list[dict]) -> tuple[dict | None, list[dict]]:
+    """Separate the session ID variable from visible prompted variables."""
+    session_id_var = None
+    visible = []
+    for var in prompted_variables:
+        if var["name"] == SESSION_ID_VAR:
+            session_id_var = var
+        else:
+            visible.append(var)
+    return session_id_var, visible
+
+
+def _build_param_to_var(variables: list[dict]) -> dict[str, dict]:
+    """Build a mapping from sanitized parameter names to variable info."""
+    return {_sanitize_param_name(var["name"]): var for var in variables}
+
+
+def _build_branch_enum(runbook_name: str, is_cac: bool, branch_names: list[str] | None):
+    """Create a dynamic Enum for branch names if this is a CaC project."""
+    if not is_cac or not branch_names:
+        return None
+    return Enum(
+        f"Branch_{_sanitize_tool_name(runbook_name)}",
+        {name: name for name in branch_names},
+        type=str,
+    )
+
+
+def _build_environment_enum(runbook_name: str, single_env: bool, env_names: list[str]):
+    """Create a dynamic Enum for environment names when multiple environments exist."""
+    if single_env or not env_names:
+        return None
+    return Enum(
+        f"Environment_{_sanitize_tool_name(runbook_name)}",
+        {name: name for name in env_names},
+        type=str,
+    )
+
+
+def _inject_session_id(variable_values: dict[str, str], session_id_var: dict | None, ctx, is_cac: bool) -> None:
+    """Inject the session ID into variable values if the prompted variable exists."""
+    if session_id_var and ctx:
+        sid_key = session_id_var["id"] if is_cac else session_id_var["name"]
+        variable_values[sid_key] = ctx.session_id or ""
+
+
+async def _resolve_tool_environment(
+    kwargs: dict, environments: list[dict], single_env: bool, env_help: str
+) -> tuple[str | None, dict | None]:
+    """Resolve the environment for a tool invocation.
+
+    Returns (env_id, error_response). If error_response is not None, the caller
+    should return it immediately.
+    """
+    environment_name = kwargs.get("environment_name", environments[0]["Name"] if single_env else None)
+    if not environment_name:
+        return None, {"status": "Failed", "error": f"Environment name is required. Available: {env_help}"}
+
+    env_id, env_error = await _resolve_environment(str(environment_name), environments)
+    if env_error:
+        return None, {"status": "Failed", "error": env_error}
+    return env_id, None
+
+
 def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_variables: list[dict], branch_names: list[str] | None = None) -> None:
     """Register a single runbook as an MCP tool with task support."""
     runbook_id = runbook["Id"]
@@ -485,61 +549,33 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
     single_env = len(environments) == 1
 
     # Create a dynamic Enum for environment names
-    if not single_env and env_names:
-        EnvironmentEnum = Enum(
-            f"Environment_{_sanitize_tool_name(runbook_name)}",
-            {name: name for name in env_names},
-            type=str,
-        )
-    else:
-        EnvironmentEnum = None
+    EnvironmentEnum = _build_environment_enum(runbook_name, single_env, env_names)
 
     # Create a dynamic Enum for branch names (CaC projects only)
-    BranchEnum = None
-    if is_cac and branch_names:
-        BranchEnum = Enum(
-            f"Branch_{_sanitize_tool_name(runbook_name)}",
-            {name: name for name in branch_names},
-            type=str,
-        )
+    BranchEnum = _build_branch_enum(runbook_name, is_cac, branch_names)
 
     # Separate the session ID variable (if present) from the prompted variables
     # so it is not exposed as a tool argument.
-    session_id_var = None
-    visible_prompted_variables = []
-    for var in prompted_variables:
-        if var["name"] == SESSION_ID_VAR:
-            session_id_var = var
-        else:
-            visible_prompted_variables.append(var)
+    session_id_var, visible_prompted_variables = _split_session_id_variable(prompted_variables)
 
     # Build a mapping from sanitized param name to variable info
-    param_to_var = {}
-    for var in visible_prompted_variables:
-        param_name = _sanitize_param_name(var["name"])
-        param_to_var[param_name] = var
+    param_to_var = _build_param_to_var(visible_prompted_variables)
 
     params = _build_tool_params(single_env, EnvironmentEnum, param_to_var, is_tenanted, multi_tenancy_mode, is_cac=is_cac, default_git_ref=default_git_ref, BranchEnum=BranchEnum)
 
     async def run_tool(**kwargs) -> dict:
         """placeholder"""
         ctx = kwargs.pop("ctx", None)
-        environment_name = kwargs.get("environment_name", environments[0]["Name"] if single_env else None)
-        if not environment_name:
-            return {"status": "Failed", "error": f"Environment name is required. Available: {env_help}"}
-
-        env_id, env_error = await _resolve_environment(environment_name, environments)
+        env_id, env_error = await _resolve_tool_environment(kwargs, environments, single_env, env_help)
         if env_error:
-            return {"status": "Failed", "error": env_error}
+            return env_error
 
         variable_values, var_error = await _collect_variable_values(kwargs, param_to_var, ctx, use_var_id=is_cac)
         if var_error:
             return var_error
 
         # Inject the session ID into variable values if the prompted variable exists
-        if session_id_var and ctx:
-            sid_key = session_id_var["id"] if is_cac else session_id_var["name"]
-            variable_values[sid_key] = ctx.session_id or ""
+        _inject_session_id(variable_values, session_id_var, ctx, is_cac)
 
         resolved_tenant_id, tenant_error = await _resolve_tenant_for_tool(kwargs, is_tenanted, multi_tenancy_mode, project_id, env_id)
         if tenant_error:
