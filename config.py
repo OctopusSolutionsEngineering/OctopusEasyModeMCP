@@ -58,5 +58,11 @@ SESSION_ID_VAR = os.environ.get("EASY_MODE_MCP_SESSION_ID_VAR", "Project.Session
 
 BASE_URL = os.environ.get("EASY_MODE_MCP_BASE_URL", "http://localhost:8000")
 
+# Server binding configuration
+HOST = os.environ.get("EASY_MODE_MCP_HOST", "0.0.0.0")
+PORT = int(os.environ.get("EASY_MODE_MCP_PORT", "8000"))
+ALLOWED_HOSTS = os.environ.get("EASY_MODE_MCP_ALLOWED_HOSTS", "*").split(",")
+ALLOWED_ORIGINS = os.environ.get("EASY_MODE_MCP_ALLOWED_ORIGINS", "*").split(",")
+
 # Comma-separated list of project names to expose (empty = all projects)
 OCTOPUS_PROJECTS_CSV = os.environ.get("EASY_MODE_MCP_OCTOPUS_PROJECTS", "")

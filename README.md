@@ -28,8 +28,13 @@ An MCP (Model Context Protocol) server that exposes Octopus Deploy runbooks as t
 |----------|---------|-------------|
 | `EASY_MODE_MCP_BASE_URL` | `http://localhost:8000` | Public base URL where the MCP server is accessible |
 | `EASY_MODE_MCP_TRANSPORT` | `streamable-http` | Transport mode: `streamable-http` or `stdio` |
+| `EASY_MODE_MCP_HOST` | `0.0.0.0` | Address the HTTP server binds to |
+| `EASY_MODE_MCP_PORT` | `8000` | Port the HTTP server listens on |
+| `EASY_MODE_MCP_ALLOWED_HOSTS` | `*` | Comma-separated list of allowed `Host` header values |
+| `EASY_MODE_MCP_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins |
 | `EASY_MODE_MCP_AUTH_TYPE` | `google` | Authentication type: `google`, `github`, `azure`, `oauth_proxy`, or `none` |
 | `EASY_MODE_MCP_OCTOPUS_PROJECTS` | *(empty)* | Comma-separated list of project names to expose. If empty, all projects are exposed |
+| `EASY_MODE_MCP_SESSION_ID_VAR` | `Project.SessionId` | Name of the prompted variable used to pass the MCP session ID to runbooks |
 
 ### Task Mode Tags
 

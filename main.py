@@ -17,7 +17,7 @@ from fastmcp.server.tasks import TaskConfig
 
 from auto_register_provider import AutoRegisterGoogleProvider
 from config import AUTH_TYPE, TASK_TAG_GROUP, TASK_TAG_ASYNC, TASK_TAG_SYNC, SESSION_ID_VAR, BASE_URL, \
-    OCTOPUS_PROJECTS_CSV
+    OCTOPUS_PROJECTS_CSV, HOST, PORT, ALLOWED_HOSTS, ALLOWED_ORIGINS
 from fastmcp import FastMCP, Context
 from octopus import (
     get_all_runbooks,
@@ -660,4 +660,4 @@ if __name__ == "__main__":
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=8000, allowed_hosts=["*"], allowed_origins=["*"])
+        mcp.run(transport="streamable-http", host=HOST, port=PORT, allowed_hosts=ALLOWED_HOSTS, allowed_origins=ALLOWED_ORIGINS)
