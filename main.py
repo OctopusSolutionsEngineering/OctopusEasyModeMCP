@@ -590,23 +590,21 @@ async def _remove_all_tools() -> None:
             logger.warning(f"Failed to remove tool '{tool.name}': {e}")
 
 
-async def register_all_runbook_tools() -> None:
-    """Fetch runbooks and environments, then register each runbook as a tool."""
-    await _remove_all_tools()
+async def _filter_runbooks_by_project(runbooks: list[dict]) -> list[dict]:
+    """Filter runbooks to only those belonging to configured project names."""
+    if not OCTOPUS_PROJECT_FILTER:
+        return runbooks
+    allowed_project_ids = await get_project_ids_by_names(OCTOPUS_PROJECT_FILTER)
+    filtered = [rb for rb in runbooks if rb.get("ProjectId") in allowed_project_ids]
+    logger.info(f"Filtered to {len(filtered)} runbooks from projects: {OCTOPUS_PROJECT_FILTER}")
+    return filtered
 
-    runbooks, environments = await asyncio.gather(
-        get_all_runbooks(),
-        get_environments(),
-    )
 
-    # Filter by project names if configured
-    if OCTOPUS_PROJECT_FILTER:
-        allowed_project_ids = await get_project_ids_by_names(OCTOPUS_PROJECT_FILTER)
-        runbooks = [rb for rb in runbooks if rb.get("ProjectId") in allowed_project_ids]
-        logger.info(f"Filtered to {len(runbooks)} runbooks from projects: {OCTOPUS_PROJECT_FILTER}")
+async def _fetch_project_prompted_vars(runbooks: list[dict]) -> tuple[dict[str, list[dict]], dict[str, str | None]]:
+    """Fetch prompted variables for each unique project referenced by runbooks.
 
-    # Fetch prompted variables for each unique project
-    # Build a mapping of project_id -> git_ref (for CaC projects)
+    Returns a tuple of (project_prompted_vars, project_git_refs).
+    """
     project_git_refs: dict[str, str | None] = {}
     for rb in runbooks:
         pid = rb.get("ProjectId", "")
@@ -617,52 +615,89 @@ async def register_all_runbook_tools() -> None:
     project_vars = await asyncio.gather(
         *[get_project_prompted_variables(pid, git_ref=project_git_refs.get(pid)) for pid in project_ids]
     )
-    project_prompted_vars = dict(zip(project_ids, project_vars))
+    return dict(zip(project_ids, project_vars)), project_git_refs
 
-    # Fetch git branches for CaC projects
+
+async def _fetch_project_branches(project_git_refs: dict[str, str | None]) -> dict[str, list[str]]:
+    """Fetch git branches for CaC projects."""
     cac_project_ids = [pid for pid, ref in project_git_refs.items() if ref]
-    if cac_project_ids:
-        branch_results = await asyncio.gather(
-            *[get_project_branches(pid) for pid in cac_project_ids],
-            return_exceptions=True,
-        )
-        project_branches: dict[str, list[str]] = {}
-        for pid, result in zip(cac_project_ids, branch_results):
-            if isinstance(result, Exception):
-                logger.warning(f"Failed to fetch branches for project {pid}: {result}")
-            else:
-                project_branches[pid] = result
-    else:
-        project_branches = {}
+    if not cac_project_ids:
+        return {}
+    branch_results = await asyncio.gather(
+        *[get_project_branches(pid) for pid in cac_project_ids],
+        return_exceptions=True,
+    )
+    project_branches: dict[str, list[str]] = {}
+    for pid, result in zip(cac_project_ids, branch_results):
+        if isinstance(result, Exception):
+            logger.warning(f"Failed to fetch branches for project {pid}: {result}")
+        else:
+            project_branches[pid] = result
+    return project_branches
 
-    # Fetch lifecycle environments for runbooks with FromProjectLifecycles scope
+
+async def _fetch_lifecycle_env_map(runbooks: list[dict]) -> dict[str, list[dict]]:
+    """Fetch lifecycle environments for runbooks with FromProjectLifecycles scope."""
     lifecycle_runbooks = [rb for rb in runbooks if rb.get("EnvironmentScope") == "FromProjectLifecycles"]
     lifecycle_envs = await asyncio.gather(
         *[get_runbook_environments(rb) for rb in lifecycle_runbooks]
     )
-    lifecycle_env_map = {rb["Id"]: envs for rb, envs in zip(lifecycle_runbooks, lifecycle_envs)}
+    return {rb["Id"]: envs for rb, envs in zip(lifecycle_runbooks, lifecycle_envs)}
+
+
+def _filter_prompted_variables(all_prompted: list[dict], runbook: dict) -> list[dict]:
+    """Filter prompted variables to those applicable to a specific runbook."""
+    runbook_id = runbook["Id"]
+    runbook_slug = runbook["Slug"]
+    return [
+        var for var in all_prompted
+        if not var.get("process_owners") or runbook_id in var["process_owners"] or runbook_slug in var["process_owners"]
+    ]
+
+
+def _resolve_runbook_environments(
+    runbook: dict, environments: list[dict], lifecycle_env_map: dict[str, list[dict]]
+) -> list[dict]:
+    """Resolve the environments applicable to a runbook based on its EnvironmentScope."""
+    scope = runbook.get("EnvironmentScope")
+    if scope == "Specified":
+        allowed_env_ids = set(runbook.get("Environments", []))
+        return [e for e in environments if e["Id"] in allowed_env_ids]
+    elif scope == "FromProjectLifecycles":
+        return lifecycle_env_map.get(runbook["Id"], environments)
+    return environments
+
+
+async def register_all_runbook_tools() -> None:
+    """Fetch runbooks and environments, then register each runbook as a tool."""
+    await _remove_all_tools()
+
+    runbooks, environments = await asyncio.gather(
+        get_all_runbooks(),
+        get_environments(),
+    )
+
+    # Filter by project names if configured
+    runbooks = await _filter_runbooks_by_project(runbooks)
+
+    # Fetch prompted variables for each unique project
+    project_prompted_vars, project_git_refs = await _fetch_project_prompted_vars(runbooks)
+
+    # Fetch git branches for CaC projects
+    project_branches = await _fetch_project_branches(project_git_refs)
+
+    # Fetch lifecycle environments for runbooks with FromProjectLifecycles scope
+    lifecycle_env_map = await _fetch_lifecycle_env_map(runbooks)
 
     for runbook in runbooks:
         all_prompted = project_prompted_vars.get(runbook.get("ProjectId", ""), [])
-        runbook_id = runbook["Id"]
-        runbook_slug = runbook["Slug"]
 
         # Filter prompted variables: include only those with no ProcessOwner scope
         # or where this runbook is listed as a process owner
-        prompted = [
-            var for var in all_prompted
-            if not var.get("process_owners") or runbook_id in var["process_owners"] or runbook_slug in var["process_owners"]
-        ]
+        prompted = _filter_prompted_variables(all_prompted, runbook)
 
         # Filter environments based on the runbook's EnvironmentScope
-        scope = runbook.get("EnvironmentScope")
-        if scope == "Specified":
-            allowed_env_ids = set(runbook.get("Environments", []))
-            runbook_environments = [e for e in environments if e["Id"] in allowed_env_ids]
-        elif scope == "FromProjectLifecycles":
-            runbook_environments = lifecycle_env_map.get(runbook["Id"], environments)
-        else:
-            runbook_environments = environments
+        runbook_environments = _resolve_runbook_environments(runbook, environments, lifecycle_env_map)
 
         _register_runbook_tool(runbook, runbook_environments, prompted, branch_names=project_branches.get(runbook.get("ProjectId", "")))
 
