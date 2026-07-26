@@ -39,7 +39,8 @@ jobs:
       - name: Run integration tests
         env:
           LICENSE: ${{ secrets.OCTOPUS_LICENSE }}
-        run: pytest tests/ -m integration -v
+          PYTHONUNBUFFERED: 1
+        run: pytest tests/ -m integration -v -s
 
   build-and-push:
     runs-on: ubuntu-latest
