@@ -45,6 +45,12 @@ from octopus import (
 
 base_url = os.environ.get("EASY_MODE_MCP_BASE_URL", "http://localhost:8000")
 
+
+def _parse_csv_env(var_name: str) -> list[str]:
+    """Parse a comma-separated environment variable into a list of trimmed, non-empty strings."""
+    return [name.strip() for name in os.environ.get(var_name, "").split(",") if name.strip()]
+
+
 # Auth type: "google", "github", "azure", "oauth_proxy", or "none" (default: "google")
 AUTH_TYPE = os.environ.get("EASY_MODE_MCP_AUTH_TYPE", "google").lower()
 AUTH_ENABLED = AUTH_TYPE != "none"
@@ -66,9 +72,7 @@ class InterventionResponse(BaseModel):
     instructions: str = Field(default="", title="Instructions", description="Additional instructions or notes for this intervention")
 
 # Optional: comma-separated list of project names to expose (empty = all projects)
-OCTOPUS_PROJECT_FILTER = [
-    name.strip() for name in os.environ.get("EASY_MODE_MCP_OCTOPUS_PROJECTS", "").split(",") if name.strip()
-]
+OCTOPUS_PROJECT_FILTER = _parse_csv_env("EASY_MODE_MCP_OCTOPUS_PROJECTS")
 
 def _create_auth():
     """Create the OAuth auth provider based on EASY_MODE_MCP_AUTH_TYPE."""
