@@ -345,7 +345,7 @@ class TestGetTaskStatusAndLog:
         """Test that get_task_status returns valid status for a completed task."""
         from octopus import (
             get_task_status, octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
-            create_runbook_run, get_published_snapshot_id,
+            create_runbook_run, get_published_snapshot_id, build_form_values,
         )
 
         async def _run_and_check():
@@ -364,9 +364,14 @@ class TestGetTaskStatusAndLog:
                 # Get environment ID
                 env_id = runbook["Environments"][0]
 
+                # Build form values with required prompted variables
+                form_values = await build_form_values(
+                    client, snapshot_id, env_id, {"DatabaseName": "testdb"}
+                )
+
                 # Run the runbook
                 task_id = await create_runbook_run(
-                    client, runbook["Id"], snapshot_id, env_id, {}, tenant_id=None
+                    client, runbook["Id"], snapshot_id, env_id, form_values, tenant_id=None
                 )
                 assert task_id
 
@@ -390,7 +395,7 @@ class TestGetTaskStatusAndLog:
         """Test that get_task_raw_log returns log content for a completed task."""
         from octopus import (
             get_task_status, get_task_raw_log, octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
-            create_runbook_run, get_published_snapshot_id,
+            create_runbook_run, get_published_snapshot_id, build_form_values,
         )
 
         async def _run_and_get_log():
@@ -405,8 +410,12 @@ class TestGetTaskStatusAndLog:
                 snapshot_id = await get_published_snapshot_id(client, runbook["Id"])
                 env_id = runbook["Environments"][0]
 
+                form_values = await build_form_values(
+                    client, snapshot_id, env_id, {"DatabaseName": "testdb"}
+                )
+
                 task_id = await create_runbook_run(
-                    client, runbook["Id"], snapshot_id, env_id, {}, tenant_id=None
+                    client, runbook["Id"], snapshot_id, env_id, form_values, tenant_id=None
                 )
 
                 # Poll until complete
@@ -438,7 +447,7 @@ class TestInterventions:
             get_task_status, get_pending_interruptions,
             take_interruption_responsibility, submit_interruption,
             octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
-            create_runbook_run, get_published_snapshot_id,
+            create_runbook_run, get_published_snapshot_id, build_form_values,
         )
 
         async def _run_intervention_workflow():
@@ -456,9 +465,14 @@ class TestInterventions:
 
                 env_id = runbook["Environments"][0]
 
+                # Build form values with required prompted variables
+                form_values = await build_form_values(
+                    client, snapshot_id, env_id, {"DatabaseName": "testdb"}
+                )
+
                 # Run the runbook (will pause at manual intervention)
                 task_id = await create_runbook_run(
-                    client, runbook["Id"], snapshot_id, env_id, {}, tenant_id=None
+                    client, runbook["Id"], snapshot_id, env_id, form_values, tenant_id=None
                 )
                 assert task_id
 
@@ -509,7 +523,7 @@ class TestInterventions:
         from octopus import (
             get_task_status, get_pending_interruptions,
             octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
-            create_runbook_run, get_published_snapshot_id,
+            create_runbook_run, get_published_snapshot_id, build_form_values,
         )
 
         async def _run_and_check():
@@ -523,8 +537,12 @@ class TestInterventions:
                 snapshot_id = await get_published_snapshot_id(client, runbook["Id"])
                 env_id = runbook["Environments"][0]
 
+                form_values = await build_form_values(
+                    client, snapshot_id, env_id, {"DatabaseName": "testdb"}
+                )
+
                 task_id = await create_runbook_run(
-                    client, runbook["Id"], snapshot_id, env_id, {}, tenant_id=None
+                    client, runbook["Id"], snapshot_id, env_id, form_values, tenant_id=None
                 )
 
                 # Wait for completion
@@ -682,6 +700,7 @@ class TestRunRunbook:
             runbook_id=runbook["Id"],
             environment_id=dev_env["Id"],
             project_id=runbook["ProjectId"],
+            variable_values={"DatabaseName": "testdb"},
         ))
 
         assert result["status"] == "Success"
@@ -713,6 +732,7 @@ class TestRunRunbook:
             runbook_id=runbook["Id"],
             environment_id=dev_env["Id"],
             project_id=runbook["ProjectId"],
+            variable_values={"DatabaseName": "testdb"},
             intervention_handler=intervention_handler,
         ))
 
