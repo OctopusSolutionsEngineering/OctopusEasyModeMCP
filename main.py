@@ -462,7 +462,7 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
     # Build a mapping from sanitized param name to variable info
     param_to_var = _build_param_to_var(visible_prompted_variables)
 
-    params = _build_tool_params(single_env, environment_enum, param_to_var, is_tenanted, multi_tenancy_mode, is_cac=is_cac, default_git_ref=default_git_ref, BranchEnum=branch_enum)
+    params = _build_tool_params(single_env, environment_enum, param_to_var, is_tenanted, multi_tenancy_mode, is_cac=is_cac, default_git_ref=default_git_ref, branch_enum=branch_enum)
 
     async def run_tool(**kwargs) -> dict:
         """placeholder"""
