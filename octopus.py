@@ -30,11 +30,17 @@ def _raise_for_status(resp: httpx.Response) -> None:
         ) from e
 
 
+USER_AGENT = "McpEasyMode"
+
+
 def octopus_headers(bearer_token: str | None = None) -> dict[str, str]:
     """Build Octopus API headers with either a bearer token or API key."""
+    headers = {"User-Agent": USER_AGENT}
     if bearer_token:
-        return {"Authorization": f"Bearer {bearer_token}"}
-    return {"X-Octopus-ApiKey": OCTOPUS_API_KEY}
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    else:
+        headers["X-Octopus-ApiKey"] = OCTOPUS_API_KEY
+    return headers
 
 
 async def exchange_token_for_octopus_token(id_token: str) -> str:
@@ -49,7 +55,7 @@ async def exchange_token_for_octopus_token(id_token: str) -> str:
     Raises:
         RuntimeError: If the token exchange fails or no access token is returned.
     """
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}) as client:
         response = await client.post(
             f"{OCTOPUS_URL}/token/v1",
             json={
