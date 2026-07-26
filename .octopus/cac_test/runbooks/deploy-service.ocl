@@ -1,0 +1,32 @@
+name = "Deploy Service"
+default_guided_failure_mode = "EnvironmentDefault"
+description = "Deploys the service"
+environment_scope = "Specified"
+environments = ["development", "production"]
+
+connectivity_policy {
+    allow_deployments_to_no_targets = true
+    skip_machine_behavior = "SkipUnavailableMachines"
+}
+
+run_retention_policy {
+    quantity_to_keep = 10
+    type = "Count"
+}
+
+process {
+    step "deploy" {
+        name = "Deploy"
+
+        action {
+            action_type = "Octopus.Script"
+            is_required = true
+            properties = {
+                Octopus.Action.RunOnServer = "True"
+                Octopus.Action.Script.ScriptBody = "echo 'Deploying service'"
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+        }
+    }
+}

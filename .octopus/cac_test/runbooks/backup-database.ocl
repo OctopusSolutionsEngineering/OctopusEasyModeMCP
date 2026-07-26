@@ -1,0 +1,32 @@
+name = "Backup Database"
+default_guided_failure_mode = "EnvironmentDefault"
+description = "Backs up the database"
+environment_scope = "Specified"
+environments = ["development"]
+
+connectivity_policy {
+    allow_deployments_to_no_targets = true
+    skip_machine_behavior = "SkipUnavailableMachines"
+}
+
+run_retention_policy {
+    quantity_to_keep = 10
+    type = "Count"
+}
+
+process {
+    step "run-script" {
+        name = "Run Script"
+
+        action {
+            action_type = "Octopus.Script"
+            is_required = true
+            properties = {
+                Octopus.Action.RunOnServer = "True"
+                Octopus.Action.Script.ScriptBody = "echo 'Backing up database'"
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+        }
+    }
+}
