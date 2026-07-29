@@ -18,7 +18,7 @@ from fastmcp.server.tasks import TaskConfig
 from auto_register_provider import AutoRegisterGoogleProvider
 from config import AUTH_TYPE, TASK_TAG_GROUP, TASK_TAG_ASYNC, TASK_TAG_SYNC, SESSION_ID_VAR, BASE_URL, \
     OCTOPUS_PROJECTS_CSV, HOST, PORT, ALLOWED_HOSTS, ALLOWED_ORIGINS, AUTO_PROCEED_INTERVENTIONS, \
-    AUTO_ASSIGN_INTERVENTIONS
+    AUTO_ASSIGN_INTERVENTIONS, AUTO_POPULATE_INTERVENTION_NOTES
 from fastmcp import FastMCP, Context
 from octopus import (
     get_all_runbooks,
@@ -152,6 +152,11 @@ class InterventionResponse(BaseModel):
     instructions: str = Field(default="", title="Instructions", description="Additional instructions or notes for this intervention")
 
 
+class InterventionNotesResponse(BaseModel):
+    """Provide notes for the manual intervention."""
+    notes: str = Field(default="", title="Notes", description="Notes or instructions for this intervention")
+
+
 async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ctx: Context, task_id: str, task: dict) -> dict | None:
     """Handle a single manual intervention. Returns a result dict if the task should stop, else None."""
     instructions, notes_element_id, result_element_id = parse_interruption_form(interruption)
@@ -206,38 +211,63 @@ async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ct
         # Take responsibility
         await take_interruption_responsibility(client, interruption['Id'])
 
-    if AUTO_PROCEED_INTERVENTIONS:
-        logger.info(f"Auto-proceeding with intervention '{interruption['Id']}'")
+    if AUTO_PROCEED_INTERVENTIONS and AUTO_POPULATE_INTERVENTION_NOTES:
+        # Both flags are true: skip all prompting entirely
+        logger.info(f"Auto-proceeding with intervention '{interruption['Id']}' (both AUTO_PROCEED and AUTO_POPULATE_NOTES enabled)")
         submit_payload = {
             "Instructions": None,
-            "Notes": "Auto-proceeded via MCP (AUTO_PROCEED_INTERVENTIONS=true)",
+            "Notes": "Auto-proceeded via MCP (AUTO_PROCEED_INTERVENTIONS=true, AUTO_POPULATE_INTERVENTION_NOTES=true)",
             "Result": "Proceed",
         }
         await submit_interruption(client, interruption['Id'], submit_payload)
         logger.info(f"Manual intervention '{title}' auto-proceeded")
         return None
 
-    try:
-        result = await ctx.elicit(
-            message=message,
-            response_type=InterventionResponse,
-        )
-    except Exception:
-        # Client doesn't support elicitation
-        logger.warning(f"Elicitation not supported by client and auto-proceed is disabled for intervention '{interruption['Id']}'")
-        return {
-            "status": "Failed",
-            "taskId": task_id,
-            "description": task.get("Description", ""),
-            "errorMessage": f"Manual intervention '{title}' requires elicitation support, which this client does not provide. Set EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS=true to auto-proceed.",
-        }
+    if AUTO_PROCEED_INTERVENTIONS:
+        # Action is auto-proceeded; only ask for notes
+        try:
+            result = await ctx.elicit(
+                message=f"{message}\n\nThis intervention will proceed automatically. Please provide any notes.",
+                response_type=InterventionNotesResponse,
+            )
+        except Exception:
+            logger.info(f"Elicitation not supported by client, auto-proceeding with intervention '{interruption['Id']}'")
+            submit_payload = {
+                "Instructions": None,
+                "Notes": "Auto-proceeded via MCP (client does not support elicitation)",
+                "Result": "Proceed",
+            }
+            await submit_interruption(client, interruption['Id'], submit_payload)
+            logger.info(f"Manual intervention '{title}' auto-proceeded")
+            return None
 
-    if isinstance(result, AcceptedElicitation):
-        action = result.data.action
-        user_instructions = result.data.instructions
+        action = "Proceed"
+        if isinstance(result, AcceptedElicitation):
+            user_instructions = result.data.notes
+        else:
+            user_instructions = ""
     else:
-        action = "Reject Deployment"
-        user_instructions = ""
+        # Ask for both action and notes
+        try:
+            result = await ctx.elicit(
+                message=message,
+                response_type=InterventionResponse,
+            )
+        except Exception:
+            logger.warning(f"Elicitation not supported by client and auto-proceed is disabled for intervention '{interruption['Id']}'")
+            return {
+                "status": "Failed",
+                "taskId": task_id,
+                "description": task.get("Description", ""),
+                "errorMessage": f"Manual intervention '{title}' requires elicitation support, which this client does not provide. Set EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS=true to auto-proceed.",
+            }
+
+        if isinstance(result, AcceptedElicitation):
+            action = result.data.action
+            user_instructions = "Auto-populated via MCP" if AUTO_POPULATE_INTERVENTION_NOTES else result.data.instructions
+        else:
+            action = "Reject Deployment"
+            user_instructions = ""
 
     notes_text = f"Responded via MCP: {action}"
     if user_instructions:
