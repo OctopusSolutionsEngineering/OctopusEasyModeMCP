@@ -15,6 +15,9 @@ from fastmcp.server.auth.providers.github import GitHubProvider
 from fastmcp.server.context import AcceptedElicitation
 from fastmcp.server.tasks import TaskConfig
 
+from key_value.aio.stores.azure_tables import AzureTablesStore
+from key_value.aio.stores.azure_tables.store import AzureTablesSanitizationStrategy
+
 from auto_register_provider import AutoRegisterGoogleProvider
 from config import AUTH_TYPE, TASK_TAG_GROUP, TASK_TAG_ASYNC, TASK_TAG_SYNC, SESSION_ID_VAR, BASE_URL, \
     OCTOPUS_PROJECTS_CSV, HOST, PORT, ALLOWED_HOSTS, ALLOWED_ORIGINS, AUTO_PROCEED_INTERVENTIONS, \
@@ -41,14 +44,10 @@ def _parse_csv_env(value: str) -> list[str]:
     return [name.strip() for name in value.split(",") if name.strip()]
 
 
-
 def _create_auth():
     """Create the OAuth auth provider based on EASY_MODE_MCP_AUTH_TYPE."""
     if AUTH_TYPE == "none":
         return None
-
-    from key_value.aio.stores.azure_tables import AzureTablesStore
-    from key_value.aio.stores.azure_tables.store import AzureTablesSanitizationStrategy
 
     storage_backend = AzureTablesStore(
         connection_string=os.environ["EASY_MODE_MCP_AZURE_STORAGE_CONNECTION_STRING"],
@@ -298,8 +297,6 @@ async def _handle_pending_interventions(client: httpx.AsyncClient, task_id: str,
     return None
 
 
-
-
 def _build_tool_params(single_env: bool, environment_enum, param_to_var: dict, is_tenanted: bool, multi_tenancy_mode: str, is_cac: bool = False, default_git_ref: str = "", branch_enum=None) -> list[inspect.Parameter]:
     """Build the list of inspect.Parameter objects for a runbook tool."""
     if single_env:
@@ -439,8 +436,6 @@ async def _collect_variable_values(kwargs: dict, param_to_var: dict, ctx: Contex
                 "error": f"Required variable '{var['label']}' was not provided.",
             }
     return variable_values, None
-
-
 
 
 def _split_session_id_variable(prompted_variables: list[dict]) -> tuple[dict | None, list[dict]]:
