@@ -964,18 +964,21 @@ async def run_runbook(runbook_id: str, environment_id: str, variable_values: dic
             )
         else:
             # Database-backed runbooks: create a new snapshot with latest packages
-            selected_packages = await resolve_db_runbook_packages(client, runbook_id)
             published_snapshot_id = await get_published_snapshot_id(client, runbook_id)
 
-            if selected_packages:
-                # Always create a new snapshot when there are packages to resolve
-                snapshot_id = await create_runbook_snapshot(client, runbook_id, selected_packages)
-            elif published_snapshot_id:
-                # Use the published snapshot if no packages need resolving
+            if published_snapshot_id:
+                # Use the published snapshot if it is available
                 snapshot_id = published_snapshot_id
             else:
-                # Unpublished runbook with no packages: create a snapshot with empty packages
-                snapshot_id = await create_runbook_snapshot(client, runbook_id, [])
+                selected_packages = await resolve_db_runbook_packages(
+                    client, runbook_id
+                )
+                if selected_packages:
+                    # Always create a new snapshot when there are packages to resolve
+                    snapshot_id = await create_runbook_snapshot(client, runbook_id, selected_packages)
+                else:
+                    # Unpublished runbook with no packages: create a snapshot with empty packages
+                    snapshot_id = await create_runbook_snapshot(client, runbook_id, [])
 
             form_values = {}
             if variable_values:
@@ -1001,5 +1004,3 @@ async def resolve_tenant_for_tool(tenant_name: str | None, is_tenanted: bool, mu
     elif multi_tenancy_mode == "Tenanted":
         return None, {"status": "Failed", "error": "Tenant name is required for this runbook."}
     return None, None
-
-
