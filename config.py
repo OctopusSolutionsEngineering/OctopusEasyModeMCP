@@ -73,3 +73,6 @@ VERBOSE_LOGS = os.environ.get("EASY_MODE_MCP_VERBOSE_LOGS", "false").lower() == 
 # Number of log lines to retrieve from the task details endpoint (default: 1000)
 LOG_TAIL = int(os.environ.get("EASY_MODE_MCP_LOG_TAIL", "1000"))
 
+# Whether to auto-proceed with manual interventions when the client doesn't support elicitation (default: false)
+AUTO_PROCEED_INTERVENTIONS = os.environ.get("EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS", "false").lower() == "true"
+

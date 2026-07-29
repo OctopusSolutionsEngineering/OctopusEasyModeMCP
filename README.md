@@ -37,6 +37,7 @@ An MCP (Model Context Protocol) server that exposes Octopus Deploy runbooks as t
 | `EASY_MODE_MCP_SESSION_ID_VAR` | `Project.SessionId` | Name of the prompted variable used to pass the MCP session ID to runbooks |
 | `EASY_MODE_MCP_VERBOSE_LOGS` | `false` | When `true`, includes verbose Octopus task logs in tool responses. When `false`, only summary-level logs are returned |
 | `EASY_MODE_MCP_LOG_TAIL` | `1000` | Number of log lines to retrieve from the Octopus task details endpoint |
+| `EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS` | `false` | When `true`, automatically proceeds with manual interventions if the MCP client doesn't support elicitation. When `false`, the tool returns an error |
 
 ### Task Mode Tags
 
