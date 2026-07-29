@@ -10,7 +10,7 @@ import httpx
 
 from fastmcp.server.dependencies import get_access_token
 
-from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, AUTH_TYPE, AUTH_ENABLED
+from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS
 
 logger = logging.getLogger(__name__)
 
@@ -619,11 +619,42 @@ async def create_cac_runbook_run(client: httpx.AsyncClient, project_id: str, git
     return ""
 
 
-async def get_task_raw_log(client: httpx.AsyncClient, task_id: str) -> str:
-    """Download the raw log for a server task."""
-    log_resp = await client.get(f"/api/tasks/{task_id}/raw")
-    _raise_for_status(log_resp)
-    return log_resp.text
+async def get_task_details_log(client: httpx.AsyncClient, task_id: str) -> str:
+    """Fetch task details and return formatted log text.
+
+    Uses the task details endpoint with verbose controlled by VERBOSE_LOGS config.
+    Returns a human-readable string extracted from the ActivityLogs structure.
+    """
+    resp = await client.get(
+        f"/api/tasks/{task_id}/details",
+        params={"verbose": str(VERBOSE_LOGS).lower(), "tail": 1000},
+    )
+    _raise_for_status(resp)
+    data = resp.json()
+    activity_logs = data.get("ActivityLogs", [])
+    return _format_activity_logs(activity_logs)
+
+
+def _format_activity_logs(activity_logs: list[dict], indent: int = 0) -> str:
+    """Recursively format ActivityLogs into readable text."""
+    lines = []
+    prefix = "  " * indent
+    for entry in activity_logs:
+        name = entry.get("Name", "")
+        status = entry.get("Status", "")
+        if name:
+            lines.append(f"{prefix}[{status}] {name}")
+
+        for log_element in entry.get("LogElements", []):
+            category = log_element.get("Category", "")
+            message = log_element.get("MessageText", "")
+            lines.append(f"{prefix}  [{category}] {message}")
+
+        children = entry.get("Children", [])
+        if children:
+            lines.append(_format_activity_logs(children, indent + 1))
+
+    return "\n".join(lines)
 
 
 async def get_task_status(client: httpx.AsyncClient, task_id: str) -> dict:
@@ -903,7 +934,7 @@ def map_variables_to_form_values(variable_values: dict[str, str], elements: list
     return form_values
 
 
-def build_task_result(task: dict, task_id: str, raw_log: str) -> dict:
+def build_task_result(task: dict, task_id: str, log_text: str) -> dict:
     """Build the final result dict from a completed task."""
     return {
         "status": task.get("State"),
@@ -911,7 +942,7 @@ def build_task_result(task: dict, task_id: str, raw_log: str) -> dict:
         "description": task.get("Description", ""),
         "errorMessage": task.get("ErrorMessage", ""),
         "duration": task.get("Duration", ""),
-        "logs": raw_log,
+        "logs": log_text,
     }
 
 
@@ -934,8 +965,8 @@ async def _poll_task_to_completion(client: httpx.AsyncClient, task_id: str, inte
         state = task.get("State")
 
         if state in ("Success", "Failed", "Canceled", "TimedOut"):
-            raw_log = await get_task_raw_log(client, task_id)
-            return build_task_result(task, task_id, raw_log)
+            log_text = await get_task_details_log(client, task_id)
+            return build_task_result(task, task_id, log_text)
 
         if task.get("HasPendingInterruptions") and intervention_handler:
             stop_result = await intervention_handler(client, task_id, task)

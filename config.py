@@ -66,3 +66,7 @@ ALLOWED_ORIGINS = os.environ.get("EASY_MODE_MCP_ALLOWED_ORIGINS", "*").split(","
 
 # Comma-separated list of project names to expose (empty = all projects)
 OCTOPUS_PROJECTS_CSV = os.environ.get("EASY_MODE_MCP_OCTOPUS_PROJECTS", "")
+
+# Whether to return verbose Octopus task logs to the MCP client (default: false)
+VERBOSE_LOGS = os.environ.get("EASY_MODE_MCP_VERBOSE_LOGS", "false").lower() == "true"
+
