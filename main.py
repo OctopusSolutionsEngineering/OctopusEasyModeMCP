@@ -21,7 +21,7 @@ from key_value.aio.stores.azure_tables.store import AzureTablesSanitizationStrat
 from auto_register_provider import AutoRegisterGoogleProvider
 from config import AUTH_TYPE, TASK_TAG_GROUP, TASK_TAG_ASYNC, TASK_TAG_SYNC, SESSION_ID_VAR, BASE_URL, \
     OCTOPUS_PROJECTS_CSV, HOST, PORT, ALLOWED_HOSTS, ALLOWED_ORIGINS, AUTO_PROCEED_INTERVENTIONS, \
-    AUTO_ASSIGN_INTERVENTIONS, AUTO_POPULATE_INTERVENTION_NOTES
+    AUTO_ASSIGN_INTERVENTIONS, AUTO_POPULATE_INTERVENTION_NOTES, AUTO_POPULATE_INTERVENTION_NOTES_VALUE
 from fastmcp import FastMCP, Context
 from octopus import (
     get_all_runbooks,
@@ -215,7 +215,7 @@ async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ct
         logger.info(f"Auto-proceeding with intervention '{interruption['Id']}' (both AUTO_PROCEED and AUTO_POPULATE_NOTES enabled)")
         submit_payload = {
             "Instructions": None,
-            "Notes": "Auto-proceeded via MCP (AUTO_PROCEED_INTERVENTIONS=true, AUTO_POPULATE_INTERVENTION_NOTES=true)",
+            "Notes": AUTO_POPULATE_INTERVENTION_NOTES_VALUE,
             "Result": "Proceed",
         }
         await submit_interruption(client, interruption['Id'], submit_payload)
@@ -263,7 +263,7 @@ async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ct
 
         if isinstance(result, AcceptedElicitation):
             action = result.data.action
-            user_instructions = "Auto-populated via MCP" if AUTO_POPULATE_INTERVENTION_NOTES else result.data.instructions
+            user_instructions = AUTO_POPULATE_INTERVENTION_NOTES_VALUE if AUTO_POPULATE_INTERVENTION_NOTES else result.data.instructions
         else:
             action = "Reject Deployment"
             user_instructions = ""

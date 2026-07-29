@@ -39,6 +39,7 @@ An MCP (Model Context Protocol) server that exposes Octopus Deploy runbooks as t
 | `EASY_MODE_MCP_LOG_TAIL` | `1000` | Number of log lines to retrieve from the Octopus task details endpoint |
 | `EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS` | `false` | When `true`, automatically selects "Proceed" for manual interventions instead of prompting the user to choose an action. The user is still prompted for notes unless `EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES` is also `true` |
 | `EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES` | `false` | When `true`, automatically populates intervention notes with a generic message instead of prompting the user. When combined with `EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS`, manual interventions are handled entirely without user interaction |
+| `EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES_VALUE` | `Auto-populated via MCP` | Custom text to use for auto-populated intervention notes when `EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES` is `true` |
 | `EASY_MODE_MCP_AUTO_ASSIGN_INTERVENTIONS` | `false` | When `true`, automatically assigns manual interventions to the current user without asking. When `false`, the user is prompted to accept responsibility |
 
 ### Task Mode Tags

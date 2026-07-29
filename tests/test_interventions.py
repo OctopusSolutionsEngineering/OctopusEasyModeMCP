@@ -396,6 +396,30 @@ class TestAutoPopulateInterventionNotes:
         payload = mock_submit.call_args[0][2]
         assert "My notes" in payload["Notes"]
 
+    def test_auto_populate_notes_uses_custom_value(self):
+        """When AUTO_POPULATE_INTERVENTION_NOTES=true and a custom value is set, it is used."""
+        client = AsyncMock()
+        interruption = _make_interruption()
+        task = _make_task()
+        ctx = _make_ctx(elicit_returns=[
+            _accepted(InterventionResponse(action="Reject Deployment", instructions="ignored")),
+        ])
+
+        with patch("main.AUTO_ASSIGN_INTERVENTIONS", True), \
+             patch("main.AUTO_PROCEED_INTERVENTIONS", False), \
+             patch("main.AUTO_POPULATE_INTERVENTION_NOTES", True), \
+             patch("main.AUTO_POPULATE_INTERVENTION_NOTES_VALUE", "Standard approval note"), \
+             patch("main.take_interruption_responsibility", new_callable=AsyncMock), \
+             patch("main.submit_interruption", new_callable=AsyncMock) as mock_submit:
+            result = asyncio.run(
+                _handle_intervention(client, interruption, ctx, "ServerTasks-1", task)
+            )
+
+        assert result is None
+        payload = mock_submit.call_args[0][2]
+        assert "Standard approval note" in payload["Notes"]
+        assert "ignored" not in payload["Notes"]
+
 
 # ---------------------------------------------------------------------------
 # _handle_intervention – Both AUTO_PROCEED + AUTO_POPULATE_NOTES
@@ -428,8 +452,28 @@ class TestBothAutoProceedAndAutoPopulateNotes:
         mock_submit.assert_awaited_once()
         payload = mock_submit.call_args[0][2]
         assert payload["Result"] == "Proceed"
-        assert "AUTO_PROCEED_INTERVENTIONS" in payload["Notes"]
-        assert "AUTO_POPULATE_INTERVENTION_NOTES" in payload["Notes"]
+        assert payload["Notes"] == "Auto-populated via MCP"
+
+    def test_both_flags_uses_custom_notes_value(self):
+        """When both flags are true and a custom notes value is set, it is used."""
+        client = AsyncMock()
+        interruption = _make_interruption()
+        task = _make_task()
+        ctx = _make_ctx()
+
+        with patch("main.AUTO_ASSIGN_INTERVENTIONS", True), \
+             patch("main.AUTO_PROCEED_INTERVENTIONS", True), \
+             patch("main.AUTO_POPULATE_INTERVENTION_NOTES", True), \
+             patch("main.AUTO_POPULATE_INTERVENTION_NOTES_VALUE", "Approved by automation"), \
+             patch("main.take_interruption_responsibility", new_callable=AsyncMock), \
+             patch("main.submit_interruption", new_callable=AsyncMock) as mock_submit:
+            result = asyncio.run(
+                _handle_intervention(client, interruption, ctx, "ServerTasks-1", task)
+            )
+
+        assert result is None
+        payload = mock_submit.call_args[0][2]
+        assert payload["Notes"] == "Approved by automation"
 
     def test_both_flags_no_assign_still_skips_action_notes(self):
         """When AUTO_ASSIGN=false but both proceed+notes are true:
