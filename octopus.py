@@ -4,6 +4,7 @@ import os
 import asyncio
 import logging
 from collections.abc import Callable, Awaitable
+from datetime import datetime, timezone
 
 import httpx
 
@@ -337,11 +338,13 @@ async def create_runbook_snapshot(client: httpx.AsyncClient, runbook_id: str, se
     _raise_for_status(resp)
     runbook = resp.json()
 
+    snapshot_name = f"Snapshot via MCP {datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+
     payload = {
         "RunbookId": runbook_id,
         "ProjectId": runbook.get("ProjectId", ""),
         "RunbookProcessId": runbook.get("RunbookProcessId", ""),
-        "Name": f"Snapshot via MCP",
+        "Name": snapshot_name,
         "SelectedPackages": selected_packages,
     }
 
