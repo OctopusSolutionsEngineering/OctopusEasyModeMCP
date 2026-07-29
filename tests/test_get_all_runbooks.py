@@ -401,9 +401,9 @@ class TestGetTaskStatusAndLog:
         assert task.get("HasBeenPickedUpByProcessor") is True
 
     def test_task_raw_log_after_runbook_run(self, octopus_environment):
-        """Test that get_task_raw_log returns log content for a completed task."""
+        """Test that get_task_details_log returns log content for a completed task."""
         from octopus import (
-            get_task_status, get_task_raw_log, octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
+            get_task_status, get_task_details_log, octopus_headers, OCTOPUS_URL, OCTOPUS_SPACE_ID,
             create_runbook_run, get_published_snapshot_id, build_form_values,
         )
 
@@ -435,8 +435,8 @@ class TestGetTaskStatusAndLog:
                         break
                     await aio.sleep(2)
 
-                raw_log = await get_task_raw_log(client, task_id)
-                return raw_log
+                log_text = await get_task_details_log(client, task_id)
+                return log_text
 
         log = asyncio.run(_run_and_get_log())
 
