@@ -70,3 +70,6 @@ OCTOPUS_PROJECTS_CSV = os.environ.get("EASY_MODE_MCP_OCTOPUS_PROJECTS", "")
 # Whether to return verbose Octopus task logs to the MCP client (default: false)
 VERBOSE_LOGS = os.environ.get("EASY_MODE_MCP_VERBOSE_LOGS", "false").lower() == "true"
 
+# Number of log lines to retrieve from the task details endpoint (default: 1000)
+LOG_TAIL = int(os.environ.get("EASY_MODE_MCP_LOG_TAIL", "1000"))
+

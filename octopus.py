@@ -10,7 +10,7 @@ import httpx
 
 from fastmcp.server.dependencies import get_access_token
 
-from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS
+from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS, LOG_TAIL
 
 logger = logging.getLogger(__name__)
 
@@ -627,7 +627,7 @@ async def get_task_details_log(client: httpx.AsyncClient, task_id: str) -> str:
     """
     resp = await client.get(
         f"/api/tasks/{task_id}/details",
-        params={"verbose": str(VERBOSE_LOGS).lower(), "tail": 1000},
+        params={"verbose": str(VERBOSE_LOGS).lower(), "tail": LOG_TAIL},
     )
     _raise_for_status(resp)
     data = resp.json()

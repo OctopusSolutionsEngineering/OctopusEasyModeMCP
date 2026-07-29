@@ -35,6 +35,8 @@ An MCP (Model Context Protocol) server that exposes Octopus Deploy runbooks as t
 | `EASY_MODE_MCP_AUTH_TYPE` | `google` | Authentication type: `google`, `github`, `azure`, `oauth_proxy`, or `none` |
 | `EASY_MODE_MCP_OCTOPUS_PROJECTS` | *(empty)* | Comma-separated list of project names to expose. If empty, all projects are exposed |
 | `EASY_MODE_MCP_SESSION_ID_VAR` | `Project.SessionId` | Name of the prompted variable used to pass the MCP session ID to runbooks |
+| `EASY_MODE_MCP_VERBOSE_LOGS` | `false` | When `true`, includes verbose Octopus task logs in tool responses. When `false`, only summary-level logs are returned |
+| `EASY_MODE_MCP_LOG_TAIL` | `1000` | Number of log lines to retrieve from the Octopus task details endpoint |
 
 ### Task Mode Tags
 
