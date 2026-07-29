@@ -268,9 +268,7 @@ async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ct
             action = "Reject Deployment"
             user_instructions = ""
 
-    notes_text = f"Responded via MCP: {action}"
-    if user_instructions:
-        notes_text += f"\nInstructions: {user_instructions}"
+    notes_text = user_instructions
 
     submit_payload = {
         "Instructions": None,
