@@ -205,6 +205,18 @@ async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ct
 
         # Take responsibility
         await take_interruption_responsibility(client, interruption['Id'])
+
+    if AUTO_PROCEED_INTERVENTIONS:
+        logger.info(f"Auto-proceeding with intervention '{interruption['Id']}'")
+        submit_payload = {
+            "Instructions": None,
+            "Notes": "Auto-proceeded via MCP (AUTO_PROCEED_INTERVENTIONS=true)",
+            "Result": "Proceed",
+        }
+        await submit_interruption(client, interruption['Id'], submit_payload)
+        logger.info(f"Manual intervention '{title}' auto-proceeded")
+        return None
+
     try:
         result = await ctx.elicit(
             message=message,
@@ -212,24 +224,13 @@ async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ct
         )
     except Exception:
         # Client doesn't support elicitation
-        if AUTO_PROCEED_INTERVENTIONS:
-            logger.info(f"Elicitation not supported by client, auto-proceeding with intervention '{interruption['Id']}'")
-            submit_payload = {
-                "Instructions": None,
-                "Notes": "Auto-proceeded via MCP (client does not support elicitation)",
-                "Result": "Proceed",
-            }
-            await submit_interruption(client, interruption['Id'], submit_payload)
-            logger.info(f"Manual intervention '{title}' auto-proceeded")
-            return None
-        else:
-            logger.warning(f"Elicitation not supported by client and auto-proceed is disabled for intervention '{interruption['Id']}'")
-            return {
-                "status": "Failed",
-                "taskId": task_id,
-                "description": task.get("Description", ""),
-                "errorMessage": f"Manual intervention '{title}' requires elicitation support, which this client does not provide. Set EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS=true to auto-proceed.",
-            }
+        logger.warning(f"Elicitation not supported by client and auto-proceed is disabled for intervention '{interruption['Id']}'")
+        return {
+            "status": "Failed",
+            "taskId": task_id,
+            "description": task.get("Description", ""),
+            "errorMessage": f"Manual intervention '{title}' requires elicitation support, which this client does not provide. Set EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS=true to auto-proceed.",
+        }
 
     if isinstance(result, AcceptedElicitation):
         action = result.data.action
