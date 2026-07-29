@@ -436,7 +436,7 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
     tool_name = _sanitize_tool_name(runbook_name)
     multi_tenancy_mode = runbook.get("MultiTenancyMode", "Untenanted")
     is_tenanted = multi_tenancy_mode in ("Tenanted", "TenantedOrUntenanted")
-    is_cac = not runbook.get("PublishedRunbookSnapshotId")
+    is_cac = bool(runbook.get("_git_ref"))
     default_git_ref = runbook.get("_git_ref", "")
     runbook_slug = runbook.get("Slug", "")
 
