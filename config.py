@@ -76,3 +76,6 @@ LOG_TAIL = int(os.environ.get("EASY_MODE_MCP_LOG_TAIL", "1000"))
 # Whether to auto-proceed with manual interventions when the client doesn't support elicitation (default: false)
 AUTO_PROCEED_INTERVENTIONS = os.environ.get("EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS", "false").lower() == "true"
 
+# Whether to automatically assign manual interventions to the current user (default: false)
+AUTO_ASSIGN_INTERVENTIONS = os.environ.get("EASY_MODE_MCP_AUTO_ASSIGN_INTERVENTIONS", "false").lower() == "true"
+

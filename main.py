@@ -17,7 +17,8 @@ from fastmcp.server.tasks import TaskConfig
 
 from auto_register_provider import AutoRegisterGoogleProvider
 from config import AUTH_TYPE, TASK_TAG_GROUP, TASK_TAG_ASYNC, TASK_TAG_SYNC, SESSION_ID_VAR, BASE_URL, \
-    OCTOPUS_PROJECTS_CSV, HOST, PORT, ALLOWED_HOSTS, ALLOWED_ORIGINS, AUTO_PROCEED_INTERVENTIONS
+    OCTOPUS_PROJECTS_CSV, HOST, PORT, ALLOWED_HOSTS, ALLOWED_ORIGINS, AUTO_PROCEED_INTERVENTIONS, \
+    AUTO_ASSIGN_INTERVENTIONS
 from fastmcp import FastMCP, Context
 from octopus import (
     get_all_runbooks,
@@ -158,47 +159,52 @@ async def _handle_intervention(client: httpx.AsyncClient, interruption: dict, ct
     title = interruption.get("Title", "Manual Intervention")
     message = f"**{title}**\n\n{instructions}" if instructions else title
 
-    # Ask the user to take responsibility or cancel
-    try:
-        responsibility_result = await ctx.elicit(
-            message=f"{message}\n\nDo you want to take responsibility for this intervention?",
-            response_type=["Assign to me", "Cancel"],
-            response_title="Responsibility",
-            response_description="Choose whether to assign this intervention to yourself or cancel",
-        )
-    except Exception:
-        # Client doesn't support elicitation
-        if AUTO_PROCEED_INTERVENTIONS:
-            logger.info(f"Elicitation not supported by client, auto-proceeding with intervention '{interruption['Id']}'")
-            await take_interruption_responsibility(client, interruption['Id'])
-            submit_payload = {
-                "Instructions": None,
-                "Notes": "Auto-proceeded via MCP (client does not support elicitation)",
-                "Result": "Proceed",
-            }
-            await submit_interruption(client, interruption['Id'], submit_payload)
-            logger.info(f"Manual intervention '{title}' auto-proceeded")
-            return None
-        else:
-            logger.warning(f"Elicitation not supported by client and auto-proceed is disabled for intervention '{interruption['Id']}'")
+    # Automatically take responsibility if configured
+    if AUTO_ASSIGN_INTERVENTIONS:
+        logger.info(f"Auto-assigning intervention '{interruption['Id']}' to current user")
+        await take_interruption_responsibility(client, interruption['Id'])
+    else:
+        # Ask the user to take responsibility or cancel
+        try:
+            responsibility_result = await ctx.elicit(
+                message=f"{message}\n\nDo you want to take responsibility for this intervention?",
+                response_type=["Assign to me", "Cancel"],
+                response_title="Responsibility",
+                response_description="Choose whether to assign this intervention to yourself or cancel",
+            )
+        except Exception:
+            # Client doesn't support elicitation
+            if AUTO_PROCEED_INTERVENTIONS:
+                logger.info(f"Elicitation not supported by client, auto-proceeding with intervention '{interruption['Id']}'")
+                await take_interruption_responsibility(client, interruption['Id'])
+                submit_payload = {
+                    "Instructions": None,
+                    "Notes": "Auto-proceeded via MCP (client does not support elicitation)",
+                    "Result": "Proceed",
+                }
+                await submit_interruption(client, interruption['Id'], submit_payload)
+                logger.info(f"Manual intervention '{title}' auto-proceeded")
+                return None
+            else:
+                logger.warning(f"Elicitation not supported by client and auto-proceed is disabled for intervention '{interruption['Id']}'")
+                return {
+                    "status": "Failed",
+                    "taskId": task_id,
+                    "description": task.get("Description", ""),
+                    "errorMessage": f"Manual intervention '{title}' requires elicitation support, which this client does not provide. Set EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS=true to auto-proceed.",
+                }
+
+        if not isinstance(responsibility_result, AcceptedElicitation) or responsibility_result.data == "Cancel":
+            logger.info(f"User cancelled taking responsibility for interruption '{interruption['Id']}'")
             return {
-                "status": "Failed",
+                "status": "Cancelled",
                 "taskId": task_id,
                 "description": task.get("Description", ""),
-                "errorMessage": f"Manual intervention '{title}' requires elicitation support, which this client does not provide. Set EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS=true to auto-proceed.",
+                "errorMessage": "User declined to take responsibility for the manual intervention.",
             }
 
-    if not isinstance(responsibility_result, AcceptedElicitation) or responsibility_result.data == "Cancel":
-        logger.info(f"User cancelled taking responsibility for interruption '{interruption['Id']}'")
-        return {
-            "status": "Cancelled",
-            "taskId": task_id,
-            "description": task.get("Description", ""),
-            "errorMessage": "User declined to take responsibility for the manual intervention.",
-        }
-
-    # Take responsibility and elicit a response
-    await take_interruption_responsibility(client, interruption['Id'])
+        # Take responsibility
+        await take_interruption_responsibility(client, interruption['Id'])
     try:
         result = await ctx.elicit(
             message=message,
