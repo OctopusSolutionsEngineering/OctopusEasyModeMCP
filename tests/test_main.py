@@ -551,13 +551,41 @@ class TestRegisterAllRunbookTools:
 class TestUpdateTools:
     """Tests for the update_tools tool."""
 
-    def test_sends_a_tool_list_changed_notification(self):
-        ctx = SimpleNamespace(session=SimpleNamespace(send_tool_list_changed=AsyncMock()))
+    @staticmethod
+    def _ctx(calls=None):
+        async def send_tool_list_changed():
+            if calls is not None:
+                calls.append("notify")
 
-        result = asyncio.run(main.update_tools(ctx))
+        return SimpleNamespace(session=SimpleNamespace(
+            send_tool_list_changed=AsyncMock(side_effect=send_tool_list_changed)
+        ))
 
+    def test_reloads_runbooks_then_notifies(self):
+        calls = []
+
+        async def fake_register():
+            calls.append("reload")
+
+        ctx = self._ctx(calls)
+        with patch.object(main, "register_all_runbook_tools", fake_register):
+            result = asyncio.run(main.update_tools(ctx))
+
+        assert calls == ["reload", "notify"]
         ctx.session.send_tool_list_changed.assert_awaited_once_with()
         assert result == {"status": "Notified"}
+
+    def test_failed_reload_still_notifies_and_reports_the_error(self):
+        async def fake_register():
+            raise RuntimeError("space not found")
+
+        ctx = self._ctx()
+        with patch.object(main, "register_all_runbook_tools", fake_register):
+            result = asyncio.run(main.update_tools(ctx))
+
+        ctx.session.send_tool_list_changed.assert_awaited_once_with()
+        assert result["status"] == "Failed"
+        assert "space not found" in result["error"]
 
     def test_is_registered_as_a_tool(self):
         tools = asyncio.run(main.mcp.list_tools())

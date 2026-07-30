@@ -738,15 +738,27 @@ mcp = FastMCP("OctopusEasyMode", auth=auth, lifespan=_app_lifespan)
 
 @mcp.tool(
     name="update_tools",
-    description="Notify the client that the list of available tools has changed, prompting it to fetch the current list.",
+    description="Reload the runbooks from Octopus and notify the client that the list of available tools has changed.",
 )
 async def update_tools(ctx: Context) -> dict:
-    """Notify the client that the list of available tools has changed.
+    """Re-register every runbook tool, then tell the client to refetch the tool list.
 
-    Runbook tools are refreshed in the background, so the client's cached tool
-    list can become stale. Calling this asks the client to fetch it again.
+    Runbooks are otherwise only reloaded every 5 minutes, so this forces a
+    reload to pick up runbooks that were added, changed or removed since then.
     """
+    error = None
+    try:
+        await register_all_runbook_tools()
+    except Exception as e:
+        logger.exception("Failed to reload runbook tools")
+        error = str(e)
+
+    # Notify even when the reload failed: the previous tools may already have
+    # been removed, so the client's cached list is stale either way.
     await ctx.session.send_tool_list_changed()
+
+    if error:
+        return {"status": "Failed", "error": f"Failed to reload runbook tools: {error}"}
     return {"status": "Notified"}
 
 
