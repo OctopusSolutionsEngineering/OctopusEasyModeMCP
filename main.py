@@ -595,9 +595,14 @@ def _resolve_task_config(runbook_tags: list[str]) -> TaskConfig:
 
 
 async def _remove_all_tools() -> None:
-    """Remove all currently registered tools from the MCP server."""
+    """Remove all registered runbook tools from the MCP server.
+
+    Static tools are kept, since they are only registered once at startup.
+    """
     tools = await mcp.list_tools()
     for tool in tools:
+        if tool.name in STATIC_TOOL_NAMES:
+            continue
         try:
             mcp.local_provider.remove_tool(tool.name)
         except Exception as e:
@@ -729,6 +734,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("OctopusEasyMode", auth=auth, lifespan=_app_lifespan)
+
+
+@mcp.tool(
+    name="update_tools",
+    description="Notify the client that the list of available tools has changed, prompting it to fetch the current list.",
+)
+async def update_tools(ctx: Context) -> dict:
+    """Notify the client that the list of available tools has changed.
+
+    Runbook tools are refreshed in the background, so the client's cached tool
+    list can become stale. Calling this asks the client to fetch it again.
+    """
+    await ctx.session.send_tool_list_changed()
+    return {"status": "Notified"}
+
+
+# Tools that are registered once at startup and survive runbook refreshes
+STATIC_TOOL_NAMES = {"update_tools"}
 
 # Register tools at import time by running the async setup
 asyncio.run(register_all_runbook_tools())

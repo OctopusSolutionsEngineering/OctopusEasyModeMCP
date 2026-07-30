@@ -546,3 +546,48 @@ class TestRegisterAllRunbookTools:
 
         assert raised is not None
         remove.assert_not_awaited()
+
+
+class TestUpdateTools:
+    """Tests for the update_tools tool."""
+
+    def test_sends_a_tool_list_changed_notification(self):
+        ctx = SimpleNamespace(session=SimpleNamespace(send_tool_list_changed=AsyncMock()))
+
+        result = asyncio.run(main.update_tools(ctx))
+
+        ctx.session.send_tool_list_changed.assert_awaited_once_with()
+        assert result == {"status": "Notified"}
+
+    def test_is_registered_as_a_tool(self):
+        tools = asyncio.run(main.mcp.list_tools())
+        assert "update_tools" in [tool.name for tool in tools]
+
+
+class TestRemoveAllTools:
+    """Tests for _remove_all_tools."""
+
+    def test_removes_runbook_tools_but_keeps_static_tools(self):
+        tools = [
+            SimpleNamespace(name="Backup_Database"),
+            SimpleNamespace(name="update_tools"),
+            SimpleNamespace(name="Deploy_Service"),
+        ]
+        remove_tool = MagicMock()
+
+        with patch.object(main.mcp, "list_tools", AsyncMock(return_value=tools)), \
+             patch.object(main.mcp.local_provider, "remove_tool", remove_tool):
+            asyncio.run(main._remove_all_tools())
+
+        removed = [call.args[0] for call in remove_tool.call_args_list]
+        assert removed == ["Backup_Database", "Deploy_Service"]
+
+    def test_removal_failures_are_logged_and_do_not_stop_the_loop(self):
+        tools = [SimpleNamespace(name="First"), SimpleNamespace(name="Second")]
+        remove_tool = MagicMock(side_effect=[Exception("nope"), None])
+
+        with patch.object(main.mcp, "list_tools", AsyncMock(return_value=tools)), \
+             patch.object(main.mcp.local_provider, "remove_tool", remove_tool):
+            asyncio.run(main._remove_all_tools())
+
+        assert remove_tool.call_count == 2
