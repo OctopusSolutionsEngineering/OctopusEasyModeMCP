@@ -120,3 +120,50 @@ class TestRefreshSpaceId:
         with _space_config("My Space"), _patched_async_client(client):
             with pytest.raises(httpx.HTTPStatusError):
                 asyncio.run(octopus.refresh_space_id())
+
+
+class TestPermissionDeniedResult:
+    """Tests for _permission_denied_result."""
+
+    def test_extracts_error_message_from_json_body(self):
+        request = httpx.Request("POST", "http://localhost/api/runbookSnapshots")
+        response = httpx.Response(
+            403,
+            json={
+                "ErrorMessage": "You do not have permission to perform this action. Missing permission: RunbookEdit",
+                "HelpText": "This action requires permission to edit runbooks.",
+            },
+            request=request,
+        )
+        exc = httpx.HTTPStatusError("forbidden", request=request, response=response)
+        result = octopus._permission_denied_result(exc)
+
+        assert result["status"] == "Failed"
+        assert "RunbookEdit" in result["error"]
+        assert "permission to edit runbooks" in result["error"]
+        assert "https://octopus.com/docs/security/users-and-teams/user-roles" in result["error"]
+
+    def test_handles_non_json_response_body(self):
+        request = httpx.Request("POST", "http://localhost/api/runbookSnapshots")
+        response = httpx.Response(403, text="Access Denied", request=request)
+        exc = httpx.HTTPStatusError("forbidden", request=request, response=response)
+        result = octopus._permission_denied_result(exc)
+
+        assert result["status"] == "Failed"
+        assert "Access Denied" in result["error"]
+        assert "https://octopus.com/docs/security/users-and-teams/user-roles" in result["error"]
+
+    def test_default_message_when_error_message_is_empty(self):
+        request = httpx.Request("POST", "http://localhost/api/runbookSnapshots")
+        response = httpx.Response(
+            403,
+            json={"ErrorMessage": "", "HelpText": ""},
+            request=request,
+        )
+        exc = httpx.HTTPStatusError("forbidden", request=request, response=response)
+        result = octopus._permission_denied_result(exc)
+
+        assert result["status"] == "Failed"
+        assert "does not have the required permissions" in result["error"]
+        assert "https://octopus.com/docs/security/users-and-teams/user-roles" in result["error"]
+

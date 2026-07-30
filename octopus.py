@@ -1023,51 +1023,82 @@ async def _poll_task_to_completion(client: httpx.AsyncClient, task_id: str, inte
         await asyncio.sleep(10)
 
 
+def _permission_denied_result(exc: httpx.HTTPStatusError) -> dict:
+    """Build a friendly error result when the API key lacks permissions."""
+    # Try to extract the Octopus error message from the response body
+    try:
+        body = exc.response.json()
+        error_message = body.get("ErrorMessage", "")
+        help_text = body.get("HelpText", "")
+    except Exception:
+        error_message = exc.response.text
+        help_text = ""
+
+    detail = error_message or "The API key does not have the required permissions to run this runbook."
+    if help_text:
+        detail = f"{detail} {help_text}"
+
+    return {
+        "status": "Failed",
+        "error": (
+            f"Permission denied: {detail}\n\n"
+            "Please ensure the API key has the necessary permissions (e.g., RunbookEdit, RunbookRun) "
+            "assigned via a team role. See https://octopus.com/docs/security/users-and-teams/user-roles "
+            "for details on configuring roles and permissions in Octopus Deploy."
+        ),
+    }
+
+
 async def run_runbook(runbook_id: str, environment_id: str, variable_values: dict[str, str] | None = None, intervention_handler: InterventionHandler | None = None, tenant_id: str | None = None, project_id: str | None = None, is_cac: bool = False, git_ref: str | None = None, runbook_slug: str | None = None) -> dict:
     """Trigger a runbook run and poll for completion, returning the final task status."""
     headers = await get_authenticated_headers()
 
     async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
-        if is_cac:
-            # Config-as-code runbooks use a different run endpoint
-            form_values = {}
-            if variable_values:
-                # For CaC runbooks, map variable names directly as form values
-                form_values = dict(variable_values)
+        try:
+            if is_cac:
+                # Config-as-code runbooks use a different run endpoint
+                form_values = {}
+                if variable_values:
+                    # For CaC runbooks, map variable names directly as form values
+                    form_values = dict(variable_values)
 
-            # Resolve latest package versions for the runbook
-            selected_packages = await resolve_selected_packages(client, project_id, git_ref, runbook_slug)
+                # Resolve latest package versions for the runbook
+                selected_packages = await resolve_selected_packages(client, project_id, git_ref, runbook_slug)
 
-            task_id = await create_cac_runbook_run(
-                client, project_id, git_ref, runbook_slug,
-                environment_id, form_values=form_values, tenant_id=tenant_id,
-                selected_packages=selected_packages,
-            )
-        else:
-            # Database-backed runbooks: create a new snapshot with latest packages
-            published_snapshot_id = await get_published_snapshot_id(client, runbook_id)
-
-            if published_snapshot_id:
-                # Use the published snapshot if it is available
-                snapshot_id = published_snapshot_id
-            else:
-                selected_packages = await resolve_db_runbook_packages(
-                    client, runbook_id
+                task_id = await create_cac_runbook_run(
+                    client, project_id, git_ref, runbook_slug,
+                    environment_id, form_values=form_values, tenant_id=tenant_id,
+                    selected_packages=selected_packages,
                 )
-                if selected_packages:
-                    # Always create a new snapshot when there are packages to resolve
-                    snapshot_id = await create_runbook_snapshot(client, runbook_id, selected_packages)
+            else:
+                # Database-backed runbooks: create a new snapshot with latest packages
+                published_snapshot_id = await get_published_snapshot_id(client, runbook_id)
+
+                if published_snapshot_id:
+                    # Use the published snapshot if it is available
+                    snapshot_id = published_snapshot_id
                 else:
-                    # Unpublished runbook with no packages: create a snapshot with empty packages
-                    snapshot_id = await create_runbook_snapshot(client, runbook_id, [])
+                    selected_packages = await resolve_db_runbook_packages(
+                        client, runbook_id
+                    )
+                    if selected_packages:
+                        # Always create a new snapshot when there are packages to resolve
+                        snapshot_id = await create_runbook_snapshot(client, runbook_id, selected_packages)
+                    else:
+                        # Unpublished runbook with no packages: create a snapshot with empty packages
+                        snapshot_id = await create_runbook_snapshot(client, runbook_id, [])
 
-            form_values = {}
-            if variable_values:
-                form_values = await build_form_values(client, snapshot_id, environment_id, variable_values)
+                form_values = {}
+                if variable_values:
+                    form_values = await build_form_values(client, snapshot_id, environment_id, variable_values)
 
-            task_id = await create_runbook_run(client, runbook_id, snapshot_id, environment_id, form_values, tenant_id=tenant_id)
+                task_id = await create_runbook_run(client, runbook_id, snapshot_id, environment_id, form_values, tenant_id=tenant_id)
 
-        return await _poll_task_to_completion(client, task_id, intervention_handler)
+            return await _poll_task_to_completion(client, task_id, intervention_handler)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                return _permission_denied_result(e)
+            raise
 
 
 async def resolve_tenant_for_tool(tenant_name: str | None, is_tenanted: bool, multi_tenancy_mode: str, project_id: str, env_id: str) -> tuple[str | None, dict | None]:
