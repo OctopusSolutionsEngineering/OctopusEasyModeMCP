@@ -42,19 +42,22 @@ class TestSpaceConfiguration:
         module = _load_config({"EASY_MODE_MCP_OCTOPUS_SPACE_ID": "Spaces-42"})
         assert module.OCTOPUS_SPACE_ID == "Spaces-42"
         assert module.OCTOPUS_SPACE_NAME == ""
+        assert module.RESOLVE_SPACE_BY_NAME is False
 
     def test_space_name_is_read(self):
         module = _load_config({"EASY_MODE_MCP_OCTOPUS_SPACE_NAME": "My Space"})
         assert module.OCTOPUS_SPACE_ID == ""
         assert module.OCTOPUS_SPACE_NAME == "My Space"
+        assert module.RESOLVE_SPACE_BY_NAME is True
 
-    def test_both_may_be_set(self):
+    def test_space_id_takes_precedence_over_space_name(self):
         module = _load_config({
             "EASY_MODE_MCP_OCTOPUS_SPACE_ID": "Spaces-42",
             "EASY_MODE_MCP_OCTOPUS_SPACE_NAME": "My Space",
         })
         assert module.OCTOPUS_SPACE_ID == "Spaces-42"
         assert module.OCTOPUS_SPACE_NAME == "My Space"
+        assert module.RESOLVE_SPACE_BY_NAME is False
 
     def test_missing_space_id_and_name_exits(self):
         with pytest.raises(SystemExit) as exc_info:

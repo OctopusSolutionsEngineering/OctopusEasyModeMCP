@@ -25,16 +25,16 @@ def _space_config(space_name: str, space_id: str = "", resolve_by_name: bool = T
     """Temporarily override the module-level space configuration."""
     original_name = octopus.OCTOPUS_SPACE_NAME
     original_id = octopus.OCTOPUS_SPACE_ID
-    original_resolve = octopus._RESOLVE_SPACE_BY_NAME
+    original_resolve = octopus.RESOLVE_SPACE_BY_NAME
     octopus.OCTOPUS_SPACE_NAME = space_name
     octopus.OCTOPUS_SPACE_ID = space_id
-    octopus._RESOLVE_SPACE_BY_NAME = resolve_by_name
+    octopus.RESOLVE_SPACE_BY_NAME = resolve_by_name
     try:
         yield
     finally:
         octopus.OCTOPUS_SPACE_NAME = original_name
         octopus.OCTOPUS_SPACE_ID = original_id
-        octopus._RESOLVE_SPACE_BY_NAME = original_resolve
+        octopus.RESOLVE_SPACE_BY_NAME = original_resolve
 
 
 @contextmanager

@@ -10,14 +10,10 @@ import httpx
 
 from fastmcp.server.dependencies import get_access_token
 
-from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, OCTOPUS_SPACE_NAME, AUTH_TYPE, AUTH_ENABLED, \
-    VERBOSE_LOGS, LOG_TAIL
+from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, OCTOPUS_SPACE_NAME, RESOLVE_SPACE_BY_NAME, \
+    AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS, LOG_TAIL
 
 logger = logging.getLogger(__name__)
-
-# When only a space name is configured, OCTOPUS_SPACE_ID is resolved from it by
-# refresh_space_id(). An explicitly configured space ID is always used as-is.
-_RESOLVE_SPACE_BY_NAME = bool(OCTOPUS_SPACE_NAME) and not OCTOPUS_SPACE_ID
 
 
 def _raise_for_status(resp: httpx.Response) -> None:
@@ -127,7 +123,7 @@ async def refresh_space_id() -> str:
     """
     global OCTOPUS_SPACE_ID
 
-    if not _RESOLVE_SPACE_BY_NAME:
+    if not RESOLVE_SPACE_BY_NAME:
         return OCTOPUS_SPACE_ID
 
     async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:

@@ -36,6 +36,11 @@ if not OCTOPUS_SPACE_ID and not OCTOPUS_SPACE_NAME:
     )
     sys.exit(1)
 
+# Whether the space name must be resolved to an ID. Captured here because
+# octopus.OCTOPUS_SPACE_ID is rebound with each resolved ID, which would
+# otherwise make this look false after the first resolution.
+RESOLVE_SPACE_BY_NAME = bool(OCTOPUS_SPACE_NAME) and not OCTOPUS_SPACE_ID
+
 # Auth type: "google", "github", "azure", "oauth_proxy", or "none" (default: "google")
 _VALID_AUTH_TYPES = ("google", "github", "azure", "oauth_proxy", "none")
 AUTH_TYPE = os.environ.get("EASY_MODE_MCP_AUTH_TYPE", "google").lower()
