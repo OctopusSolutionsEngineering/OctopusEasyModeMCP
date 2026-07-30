@@ -89,8 +89,8 @@ VERBOSE_LOGS = os.environ.get("EASY_MODE_MCP_VERBOSE_LOGS", "false").lower() == 
 # Number of log lines to retrieve from the task details endpoint (default: 1000)
 LOG_TAIL = int(os.environ.get("EASY_MODE_MCP_LOG_TAIL", "1000"))
 
-# Whether to auto-proceed with manual interventions when the client doesn't support elicitation (default: false)
-AUTO_PROCEED_INTERVENTIONS = os.environ.get("EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS", "false").lower() == "true"
+# Whether to auto-proceed with manual interventions when the client doesn't support elicitation (default: true)
+AUTO_PROCEED_INTERVENTIONS = os.environ.get("EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS", "true").lower() == "true"
 
 # Whether to automatically populate intervention notes with a generic response (default: false)
 AUTO_POPULATE_INTERVENTION_NOTES = os.environ.get("EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES", "false").lower() == "true"
@@ -98,6 +98,6 @@ AUTO_POPULATE_INTERVENTION_NOTES = os.environ.get("EASY_MODE_MCP_AUTO_POPULATE_I
 # Custom value to use for auto-populated intervention notes (default: "Auto-populated via MCP")
 AUTO_POPULATE_INTERVENTION_NOTES_VALUE = os.environ.get("EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES_VALUE", "Auto-populated via MCP")
 
-# Whether to automatically assign manual interventions to the current user (default: false)
-AUTO_ASSIGN_INTERVENTIONS = os.environ.get("EASY_MODE_MCP_AUTO_ASSIGN_INTERVENTIONS", "false").lower() == "true"
+# Whether to automatically assign manual interventions to the current user (default: true)
+AUTO_ASSIGN_INTERVENTIONS = os.environ.get("EASY_MODE_MCP_AUTO_ASSIGN_INTERVENTIONS", "true").lower() == "true"
 

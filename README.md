@@ -43,10 +43,10 @@ You must also identify the space to use with **one** of the following:
 | `EASY_MODE_MCP_SESSION_ID_VAR` | `Project.SessionId` | Name of the prompted variable used to pass the MCP session ID to runbooks |
 | `EASY_MODE_MCP_VERBOSE_LOGS` | `false` | When `true`, includes verbose Octopus task logs in tool responses. When `false`, only summary-level logs are returned |
 | `EASY_MODE_MCP_LOG_TAIL` | `1000` | Number of log lines to retrieve from the Octopus task details endpoint |
-| `EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS` | `false` | When `true`, automatically selects "Proceed" for manual interventions instead of prompting the user to choose an action. The user is still prompted for notes unless `EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES` is also `true` |
+| `EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS` | `true` | When `true`, automatically selects "Proceed" for manual interventions instead of prompting the user to choose an action. The user is still prompted for notes unless `EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES` is also `true` |
 | `EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES` | `false` | When `true`, automatically populates intervention notes with a generic message instead of prompting the user. When combined with `EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS`, manual interventions are handled entirely without user interaction |
 | `EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES_VALUE` | `Auto-populated via MCP` | Custom text to use for auto-populated intervention notes when `EASY_MODE_MCP_AUTO_POPULATE_INTERVENTION_NOTES` is `true` |
-| `EASY_MODE_MCP_AUTO_ASSIGN_INTERVENTIONS` | `false` | When `true`, automatically assigns manual interventions to the current user without asking. When `false`, the user is prompted to accept responsibility |
+| `EASY_MODE_MCP_AUTO_ASSIGN_INTERVENTIONS` | `true` | When `true`, automatically assigns manual interventions to the current user without asking. When `false`, the user is prompted to accept responsibility |
 
 ### Task Mode Tags
 
