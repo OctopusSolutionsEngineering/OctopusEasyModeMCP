@@ -10,9 +10,14 @@ import httpx
 
 from fastmcp.server.dependencies import get_access_token
 
-from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS, LOG_TAIL
+from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, OCTOPUS_SPACE_NAME, AUTH_TYPE, AUTH_ENABLED, \
+    VERBOSE_LOGS, LOG_TAIL
 
 logger = logging.getLogger(__name__)
+
+# When only a space name is configured, OCTOPUS_SPACE_ID is resolved from it by
+# refresh_space_id(). An explicitly configured space ID is always used as-is.
+_RESOLVE_SPACE_BY_NAME = bool(OCTOPUS_SPACE_NAME) and not OCTOPUS_SPACE_ID
 
 
 def _raise_for_status(resp: httpx.Response) -> None:
@@ -87,6 +92,52 @@ async def get_authenticated_headers() -> dict[str, str]:
         access_token = await exchange_token_for_octopus_token(google_access_token.id_token)
         return octopus_headers(access_token)
     return octopus_headers()
+
+
+async def _resolve_space_id_from_name(client: httpx.AsyncClient, space_name: str) -> str:
+    """Look up the ID of the Octopus space with the given name.
+
+    Raises:
+        RuntimeError: If no space with exactly that name exists.
+    """
+    resp = await client.get("/api/spaces", params={"partialName": space_name, "take": 1000})
+    _raise_for_status(resp)
+    spaces = resp.json().get("Items", [])
+
+    for space in spaces:
+        if space["Name"].lower() == space_name.lower():
+            return space["Id"]
+
+    partial_matches = ", ".join(space["Name"] for space in spaces)
+    raise RuntimeError(
+        f"No Octopus space named {space_name!r} was found."
+        + (f" Spaces with similar names: {partial_matches}." if partial_matches else "")
+    )
+
+
+async def refresh_space_id() -> str:
+    """Resolve the configured space name to a space ID and cache it globally.
+
+    Called before each runbook refresh, because the space may have been deleted
+    and recreated with a different ID since the last refresh. Does nothing when
+    a space ID was configured explicitly.
+
+    Raises:
+        RuntimeError: If the configured space name cannot be resolved.
+    """
+    global OCTOPUS_SPACE_ID
+
+    if not _RESOLVE_SPACE_BY_NAME:
+        return OCTOPUS_SPACE_ID
+
+    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+        space_id = await _resolve_space_id_from_name(client, OCTOPUS_SPACE_NAME)
+
+    if space_id != OCTOPUS_SPACE_ID:
+        logger.info("Resolved space '%s' to %s", OCTOPUS_SPACE_NAME, space_id)
+        OCTOPUS_SPACE_ID = space_id
+
+    return space_id
 
 
 async def get_all_runbooks() -> list[dict]:

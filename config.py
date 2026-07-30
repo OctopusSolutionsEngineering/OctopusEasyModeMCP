@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 _REQUIRED_ENV_VARS = [
     "EASY_MODE_MCP_OCTOPUS_URL",
     "EASY_MODE_MCP_OCTOPUS_API_KEY",
-    "EASY_MODE_MCP_OCTOPUS_SPACE_ID",
 ]
 
 _missing = [var for var in _REQUIRED_ENV_VARS if not os.environ.get(var)]
@@ -23,7 +22,19 @@ if _missing:
 
 OCTOPUS_URL = os.environ["EASY_MODE_MCP_OCTOPUS_URL"]
 OCTOPUS_API_KEY = os.environ["EASY_MODE_MCP_OCTOPUS_API_KEY"]
-OCTOPUS_SPACE_ID = os.environ["EASY_MODE_MCP_OCTOPUS_SPACE_ID"]
+
+# The space can be identified either by ID, or by name. A name is resolved to an
+# ID before every runbook refresh, since the space may have been deleted and
+# recreated with a different ID in the meantime. An explicit ID wins over a name.
+OCTOPUS_SPACE_ID = os.environ.get("EASY_MODE_MCP_OCTOPUS_SPACE_ID", "")
+OCTOPUS_SPACE_NAME = os.environ.get("EASY_MODE_MCP_OCTOPUS_SPACE_NAME", "")
+
+if not OCTOPUS_SPACE_ID and not OCTOPUS_SPACE_NAME:
+    logger.error(
+        "Either EASY_MODE_MCP_OCTOPUS_SPACE_ID or EASY_MODE_MCP_OCTOPUS_SPACE_NAME "
+        "must be set. Please set one before starting the server.",
+    )
+    sys.exit(1)
 
 # Auth type: "google", "github", "azure", "oauth_proxy", or "none" (default: "google")
 _VALID_AUTH_TYPES = ("google", "github", "azure", "oauth_proxy", "none")

@@ -35,6 +35,7 @@ from octopus import (
     take_interruption_responsibility,
     parse_interruption_form,
     run_runbook,
+    refresh_space_id,
     resolve_tenant_for_tool,
 )
 
@@ -684,6 +685,11 @@ def _resolve_runbook_environments(
 
 async def register_all_runbook_tools() -> None:
     """Fetch runbooks and environments, then register each runbook as a tool."""
+    # Resolve the space name to an ID first: the space may have been deleted and
+    # recreated with a new ID since the last refresh. Done before removing the
+    # existing tools so a failed lookup leaves the current tools in place.
+    await refresh_space_id()
+
     await _remove_all_tools()
 
     runbooks, environments = await asyncio.gather(

@@ -20,7 +20,13 @@ An MCP (Model Context Protocol) server that exposes Octopus Deploy runbooks as t
 |----------|-------------|
 | `EASY_MODE_MCP_OCTOPUS_URL` | Base URL of your Octopus Deploy instance (e.g., `https://myinstance.octopus.app`) |
 | `EASY_MODE_MCP_OCTOPUS_API_KEY` | Octopus Deploy API key for server-side operations (fetching runbooks, environments, etc.) |
+
+You must also identify the space to use with **one** of the following:
+
+| Variable | Description |
+|----------|-------------|
 | `EASY_MODE_MCP_OCTOPUS_SPACE_ID` | Octopus space ID (e.g., `Spaces-1`) |
+| `EASY_MODE_MCP_OCTOPUS_SPACE_NAME` | Octopus space name (e.g., `Default`). Resolved to a space ID before every runbook refresh, so a space that is deleted and recreated with a new ID is picked up automatically. Ignored if `EASY_MODE_MCP_OCTOPUS_SPACE_ID` is set |
 
 ### Server Configuration
 

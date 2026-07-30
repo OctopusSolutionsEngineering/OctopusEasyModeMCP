@@ -505,3 +505,44 @@ class TestResolveEnvironment:
         assert "Staging" in error
         assert "Development" in error
         assert "Production" in error
+
+
+class TestRegisterAllRunbookTools:
+    """Tests for the space refresh performed by register_all_runbook_tools."""
+
+    def test_space_id_is_refreshed_before_tools_are_removed(self):
+        calls = []
+
+        async def fake_refresh():
+            calls.append("refresh")
+            return "Spaces-1"
+
+        async def fake_remove():
+            calls.append("remove")
+
+        with patch.object(main, "refresh_space_id", fake_refresh), \
+             patch.object(main, "_remove_all_tools", fake_remove), \
+             patch.object(main, "get_all_runbooks", AsyncMock(return_value=[])), \
+             patch.object(main, "get_environments", AsyncMock(return_value=[])):
+            asyncio.run(main.register_all_runbook_tools())
+
+        assert calls == ["refresh", "remove"]
+
+    def test_failed_space_refresh_leaves_existing_tools_registered(self):
+        async def fake_refresh():
+            raise RuntimeError("space not found")
+
+        remove = AsyncMock()
+
+        with patch.object(main, "refresh_space_id", fake_refresh), \
+             patch.object(main, "_remove_all_tools", remove), \
+             patch.object(main, "get_all_runbooks", AsyncMock(return_value=[])), \
+             patch.object(main, "get_environments", AsyncMock(return_value=[])):
+            try:
+                asyncio.run(main.register_all_runbook_tools())
+                raised = None
+            except RuntimeError as e:
+                raised = e
+
+        assert raised is not None
+        remove.assert_not_awaited()
