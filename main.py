@@ -746,6 +746,9 @@ async def update_tools(ctx: Context) -> dict:
     Runbooks are otherwise only reloaded every 5 minutes, so this forces a
     reload to pick up runbooks that were added, changed or removed since then.
     """
+    # Snapshot tool names before the refresh
+    before_names = {t.name for t in await mcp.list_tools()} - STATIC_TOOL_NAMES
+
     error = None
     try:
         await register_all_runbook_tools()
@@ -753,13 +756,19 @@ async def update_tools(ctx: Context) -> dict:
         logger.exception("Failed to reload runbook tools")
         error = str(e)
 
+    # Snapshot tool names after the refresh
+    after_names = {t.name for t in await mcp.list_tools()} - STATIC_TOOL_NAMES
+
+    added = sorted(after_names - before_names)
+    removed = sorted(before_names - after_names)
+
     # Notify even when the reload failed: the previous tools may already have
     # been removed, so the client's cached list is stale either way.
     await ctx.session.send_tool_list_changed()
 
     if error:
-        return {"status": "Failed", "error": f"Failed to reload runbook tools: {error}"}
-    return {"status": "Notified"}
+        return {"status": "Failed", "error": f"Failed to reload runbook tools: {error}", "added": added, "removed": removed}
+    return {"status": "Notified", "added": added, "removed": removed}
 
 
 # Tools that are registered once at startup and survive runbook refreshes

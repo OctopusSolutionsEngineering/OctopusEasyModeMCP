@@ -567,25 +567,35 @@ class TestUpdateTools:
         async def fake_register():
             calls.append("reload")
 
+        before_tools = [SimpleNamespace(name="update_tools"), SimpleNamespace(name="OldTool")]
+        after_tools = [SimpleNamespace(name="update_tools"), SimpleNamespace(name="NewTool")]
+
         ctx = self._ctx(calls)
-        with patch.object(main, "register_all_runbook_tools", fake_register):
+        with patch.object(main, "register_all_runbook_tools", fake_register), \
+             patch.object(main.mcp, "list_tools", AsyncMock(side_effect=[before_tools, after_tools])):
             result = asyncio.run(main.update_tools(ctx))
 
         assert calls == ["reload", "notify"]
         ctx.session.send_tool_list_changed.assert_awaited_once_with()
-        assert result == {"status": "Notified"}
+        assert result == {"status": "Notified", "added": ["NewTool"], "removed": ["OldTool"]}
 
     def test_failed_reload_still_notifies_and_reports_the_error(self):
         async def fake_register():
             raise RuntimeError("space not found")
 
+        before_tools = [SimpleNamespace(name="update_tools"), SimpleNamespace(name="SomeTool")]
+        after_tools = [SimpleNamespace(name="update_tools")]
+
         ctx = self._ctx()
-        with patch.object(main, "register_all_runbook_tools", fake_register):
+        with patch.object(main, "register_all_runbook_tools", fake_register), \
+             patch.object(main.mcp, "list_tools", AsyncMock(side_effect=[before_tools, after_tools])):
             result = asyncio.run(main.update_tools(ctx))
 
         ctx.session.send_tool_list_changed.assert_awaited_once_with()
         assert result["status"] == "Failed"
         assert "space not found" in result["error"]
+        assert result["added"] == []
+        assert result["removed"] == ["SomeTool"]
 
     def test_is_registered_as_a_tool(self):
         tools = asyncio.run(main.mcp.list_tools())
