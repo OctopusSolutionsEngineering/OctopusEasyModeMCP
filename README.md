@@ -168,6 +168,34 @@ Add the following to your MCP client configuration (e.g., `mcp.json`):
 }
 ```
 
+### stdio (Docker container)
+
+Runs the published container image, passing configuration as environment variables. The `--pull=always` flag ensures the latest image is used, and the extended `timeout` allows for long-running runbooks.
+
+```json
+{
+  "servers": {
+    "easymode": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--pull=always",
+        "-e", "EASY_MODE_MCP_TRANSPORT=stdio",
+        "-e", "EASY_MODE_MCP_AUTH_TYPE=none",
+        "-e", "EASY_MODE_MCP_OCTOPUS_URL=https://yourinstance.octopus.app",
+        "-e", "EASY_MODE_MCP_OCTOPUS_API_KEY=API-KEYGOESHERE",
+        "-e", "EASY_MODE_MCP_OCTOPUS_SPACE_NAME=Scratchpad",
+        "ghcr.io/octopussolutionsengineering/octopuseasymodemcp:latest"
+      ],
+      "timeout": 600000
+    }
+  }
+}
+```
+
 ## Running Locally
 
 ```bash
