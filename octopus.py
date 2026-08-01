@@ -12,7 +12,7 @@ import httpx
 from fastmcp.server.dependencies import get_access_token
 
 from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, OCTOPUS_SPACE_NAME, RESOLVE_SPACE_BY_NAME, \
-    AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS, LOG_TAIL
+    AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS, LOG_TAIL, RATE_LIMIT_PER_MINUTE
 
 logger = logging.getLogger(__name__)
 
@@ -66,18 +66,64 @@ def _parse_retry_after(value: str | None) -> float:
     return max(delta, 0.0)
 
 
-class RetryingAsyncClient(httpx.AsyncClient):
-    """An httpx.AsyncClient that retries requests on HTTP 429 responses.
+class AsyncRateLimiter:
+    """A token-bucket rate limiter shared across all Octopus API clients.
 
-    When the Octopus API returns 429 (Too Many Requests), the client sleeps
-    (honouring the Retry-After header when present) and retries the same request,
-    up to MAX_RETRIES_429 times. All request methods (get/post/put/...) funnel
-    through send(), so overriding it covers every request made with this client.
+    Enforces an average of `rate_per_minute` requests per minute while allowing
+    short bursts up to that many requests. A rate of 0 (or less) disables limiting.
+    """
+
+    def __init__(self, rate_per_minute: float):
+        self._capacity = rate_per_minute
+        self._tokens = rate_per_minute
+        self._refill_per_second = rate_per_minute / 60.0
+        self._updated_at: float | None = None
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        """Block until a request token is available, then consume it."""
+        if self._capacity <= 0:
+            return
+
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            if self._updated_at is None:
+                self._updated_at = now
+
+            # Refill tokens based on the time elapsed since the last acquire.
+            elapsed = now - self._updated_at
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_per_second)
+            self._updated_at = now
+
+            if self._tokens < 1:
+                # Not enough for a whole token; sleep until one has accrued.
+                wait = (1 - self._tokens) / self._refill_per_second
+                await asyncio.sleep(wait)
+                self._tokens = 0.0
+                self._updated_at = loop.time()
+            else:
+                self._tokens -= 1
+
+
+# Shared limiter for every request made through RetryingAsyncClient.
+_rate_limiter = AsyncRateLimiter(RATE_LIMIT_PER_MINUTE)
+
+
+class RetryingAsyncClient(httpx.AsyncClient):
+    """An httpx.AsyncClient that rate-limits and retries Octopus API requests.
+
+    Every request is throttled through the shared token-bucket rate limiter, and
+    a request that returns HTTP 429 (Too Many Requests) is retried after sleeping
+    (honouring the Retry-After header when present), up to MAX_RETRIES_429 times.
+    All request methods (get/post/put/...) funnel through send(), so overriding it
+    covers every request made with this client.
     """
 
     async def send(self, request: httpx.Request, **kwargs) -> httpx.Response:
         attempt = 0
         while True:
+            await _rate_limiter.acquire()
             response = await super().send(request, **kwargs)
             if response.status_code != 429 or attempt >= MAX_RETRIES_429:
                 return response
