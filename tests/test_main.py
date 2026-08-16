@@ -37,6 +37,8 @@ _inject_session_id = main._inject_session_id
 _filter_prompted_variables = main._filter_prompted_variables
 _resolve_runbook_environments = main._resolve_runbook_environments
 _resolve_environment = main._resolve_environment
+_resolve_tool_environment = main._resolve_tool_environment
+_unwrap_enums = main._unwrap_enums
 
 
 class TestParseCsvEnv:
@@ -289,6 +291,58 @@ class TestBuildEnvironmentEnum:
 
     def test_returns_none_for_empty_env_names(self):
         assert _build_environment_enum("My Runbook", False, []) is None
+
+
+class TestUnwrapEnums:
+    """Tests for _unwrap_enums."""
+
+    def test_unwraps_environment_enum_member(self):
+        env_enum = _build_environment_enum("Generate Artifact", False, ["Development", "Production"])
+
+        result = _unwrap_enums({"environment_name": env_enum.Development})
+
+        assert result["environment_name"] == "Development"
+        assert not isinstance(result["environment_name"], Enum)
+
+    def test_unwraps_branch_enum_member(self):
+        branch_enum = _build_branch_enum("Generate Artifact", True, ["main", "develop"])
+
+        result = _unwrap_enums({"git_ref": branch_enum.main})
+
+        assert f"refs/heads/{result['git_ref']}" == "refs/heads/main"
+
+    def test_leaves_non_enum_values_untouched(self):
+        kwargs = {"tenant_name": "Acme", "Some Variable": "value", "missing": None}
+
+        assert _unwrap_enums(kwargs) == kwargs
+
+    def test_empty_kwargs(self):
+        assert _unwrap_enums({}) == {}
+
+
+class TestResolveToolEnvironmentWithEnum:
+    """Regression test: enum members must resolve to real environments."""
+
+    def test_enum_member_resolves_after_unwrapping(self):
+        environments = [
+            {"Id": "Env-1", "Name": "Development"},
+            {"Id": "Env-2", "Name": "Production"},
+        ]
+        env_enum = _build_environment_enum("Generate Artifact", False, ["Development", "Production"])
+        kwargs = _unwrap_enums({"environment_name": env_enum.Development})
+
+        env_id, error = asyncio.run(
+            _resolve_tool_environment(kwargs, environments, False, "Development, Production")
+        )
+
+        assert env_id == "Env-1"
+        assert error is None
+
+    def test_str_of_enum_member_is_qualified_name(self):
+        """Rationale for _unwrap_enums: str(member) renders as 'EnumName.MemberName'."""
+        env_enum = _build_environment_enum("Generate Artifact", False, ["Development", "Production"])
+
+        assert str(env_enum.Development) == "Environment_Generate_Artifact.Development"
 
 
 class TestInjectSessionId:

@@ -476,6 +476,17 @@ def _build_environment_enum(runbook_name: str, single_env: bool, env_names: list
     )
 
 
+def _unwrap_enums(kwargs: dict) -> dict:
+    """Replace dynamic Enum members in tool arguments with their underlying values.
+
+    Members of the environment and branch Enums are ``str`` subclasses, but
+    ``str(member)`` and f-string interpolation both render them as
+    ``EnumName.MemberName`` (e.g. ``Environment_My_Runbook.Development``), which
+    never matches a real environment or branch name.
+    """
+    return {key: value.value if isinstance(value, Enum) else value for key, value in kwargs.items()}
+
+
 def _inject_session_id(variable_values: dict[str, str], session_id_var: dict | None, ctx, is_cac: bool) -> None:
     """Inject the session ID into variable values if the prompted variable exists."""
     if session_id_var and ctx:
@@ -541,6 +552,7 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
     async def run_tool(**kwargs) -> dict:
         """placeholder"""
         ctx = kwargs.pop("ctx", None)
+        kwargs = _unwrap_enums(kwargs)
         env_id, env_error = await _resolve_tool_environment(kwargs, environments, single_env, env_help)
         if env_error:
             return env_error
