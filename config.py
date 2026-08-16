@@ -89,6 +89,15 @@ VERBOSE_LOGS = os.environ.get("EASY_MODE_MCP_VERBOSE_LOGS", "false").lower() == 
 # Number of log lines to retrieve from the task details endpoint (default: 1000)
 LOG_TAIL = int(os.environ.get("EASY_MODE_MCP_LOG_TAIL", "1000"))
 
+# Whether to download the artifacts created by a runbook run and return them to
+# the MCP client (default: true)
+DOWNLOAD_ARTIFACTS = os.environ.get("EASY_MODE_MCP_DOWNLOAD_ARTIFACTS", "true").lower() == "true"
+
+# Maximum size of a single artifact returned to the MCP client, in characters for
+# text artifacts and bytes for binary ones. Larger artifacts are truncated
+# (default: 100000)
+MAX_ARTIFACT_SIZE = int(os.environ.get("EASY_MODE_MCP_MAX_ARTIFACT_SIZE", "100000"))
+
 # Whether to auto-proceed with manual interventions when the client doesn't support elicitation (default: true)
 AUTO_PROCEED_INTERVENTIONS = os.environ.get("EASY_MODE_MCP_AUTO_PROCEED_INTERVENTIONS", "true").lower() == "true"
 

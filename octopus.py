@@ -2,6 +2,7 @@
 
 import os
 import asyncio
+import base64
 import logging
 from collections.abc import Callable, Awaitable
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ import httpx
 from fastmcp.server.dependencies import get_access_token
 
 from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, OCTOPUS_SPACE_NAME, RESOLVE_SPACE_BY_NAME, \
-    AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS, LOG_TAIL
+    AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS, LOG_TAIL, DOWNLOAD_ARTIFACTS, MAX_ARTIFACT_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -704,6 +705,106 @@ def _format_activity_logs(activity_logs: list[dict], indent: int = 0) -> str:
     return "\n".join(lines)
 
 
+async def list_task_artifacts(client: httpx.AsyncClient, task_id: str) -> list[dict]:
+    """Fetch the artifact metadata for every artifact created by a server task."""
+    resp = await client.get(
+        f"/api/{OCTOPUS_SPACE_ID}/artifacts",
+        params={"regarding": task_id, "take": 1000},
+    )
+    _raise_for_status(resp)
+    return resp.json().get("Items", [])
+
+
+async def download_artifact(client: httpx.AsyncClient, artifact: dict) -> dict:
+    """Download the content of a single artifact.
+
+    Args:
+        client: The HTTP client to use
+        artifact: An artifact resource as returned by list_task_artifacts
+
+    Returns:
+        A dict with the artifact id, filename, content, encoding ("text" or
+        "base64"), size, and whether the content was truncated.
+    """
+    artifact_id = artifact.get("Id", "")
+    content_link = artifact.get("Links", {}).get("Content") or (
+        f"/api/{OCTOPUS_SPACE_ID}/artifacts/{artifact_id}/content"
+    )
+    resp = await client.get(content_link)
+    _raise_for_status(resp)
+    return _build_artifact_result(artifact, resp.content)
+
+
+def _build_artifact_result(artifact: dict, content: bytes) -> dict:
+    """Build the returned representation of an artifact, truncating large content.
+
+    Content that decodes as UTF-8 is returned as text; anything else is base64
+    encoded so binary artifacts survive the round trip to the MCP client.
+    """
+    artifact_id = artifact.get("Id", "")
+    result = {
+        "id": artifact_id,
+        "filename": artifact.get("Filename", artifact_id),
+        "created": artifact.get("Created", ""),
+    }
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        encoded = content[:MAX_ARTIFACT_SIZE]
+        result["encoding"] = "base64"
+        result["content"] = base64.b64encode(encoded).decode("ascii")
+        result["size"] = len(content)
+        result["truncated"] = len(content) > MAX_ARTIFACT_SIZE
+    else:
+        result["encoding"] = "text"
+        result["content"] = text[:MAX_ARTIFACT_SIZE]
+        result["size"] = len(text)
+        result["truncated"] = len(text) > MAX_ARTIFACT_SIZE
+
+    if result["truncated"]:
+        logger.info(
+            "Truncated artifact %s (%s) from %d to %d",
+            artifact_id, result["filename"], result["size"], MAX_ARTIFACT_SIZE,
+        )
+
+    return result
+
+
+async def get_task_artifacts(client: httpx.AsyncClient, task_id: str) -> list[dict]:
+    """Download every artifact attached to the steps of a runbook run.
+
+    Artifact failures are logged and skipped rather than raised, so a runbook run
+    still reports its status and logs when its artifacts cannot be retrieved
+    (for example when the API key lacks the ArtifactView permission).
+
+    Returns:
+        A list of artifact dicts, or an empty list when artifact downloads are
+        disabled or none could be retrieved.
+    """
+    if not DOWNLOAD_ARTIFACTS:
+        return []
+
+    try:
+        artifacts = await list_task_artifacts(client, task_id)
+    except Exception:
+        logger.exception("Failed to list artifacts for task %s", task_id)
+        return []
+
+    results = []
+    for artifact in artifacts:
+        try:
+            results.append(await download_artifact(client, artifact))
+        except Exception:
+            logger.exception(
+                "Failed to download artifact %s (%s) for task %s",
+                artifact.get("Id", ""), artifact.get("Filename", ""), task_id,
+            )
+
+    logger.info("Downloaded %d of %d artifacts for task %s", len(results), len(artifacts), task_id)
+    return results
+
+
 async def get_task_status(client: httpx.AsyncClient, task_id: str) -> dict:
     """Fetch a server task and return its JSON representation."""
     resp = await client.get(f"/api/tasks/{task_id}")
@@ -981,7 +1082,7 @@ def map_variables_to_form_values(variable_values: dict[str, str], elements: list
     return form_values
 
 
-def build_task_result(task: dict, task_id: str, log_text: str) -> dict:
+def build_task_result(task: dict, task_id: str, log_text: str, artifacts: list[dict] | None = None) -> dict:
     """Build the final result dict from a completed task."""
     return {
         "status": task.get("State"),
@@ -990,6 +1091,7 @@ def build_task_result(task: dict, task_id: str, log_text: str) -> dict:
         "errorMessage": task.get("ErrorMessage", ""),
         "duration": task.get("Duration", ""),
         "logs": log_text,
+        "artifacts": artifacts or [],
     }
 
 
@@ -1013,7 +1115,8 @@ async def _poll_task_to_completion(client: httpx.AsyncClient, task_id: str, inte
 
         if state in ("Success", "Failed", "Canceled", "TimedOut"):
             log_text = await get_task_details_log(client, task_id)
-            return build_task_result(task, task_id, log_text)
+            artifacts = await get_task_artifacts(client, task_id)
+            return build_task_result(task, task_id, log_text, artifacts)
 
         if task.get("HasPendingInterruptions") and intervention_handler:
             stop_result = await intervention_handler(client, task_id, task)
