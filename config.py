@@ -110,3 +110,6 @@ AUTO_POPULATE_INTERVENTION_NOTES_VALUE = os.environ.get("EASY_MODE_MCP_AUTO_POPU
 # Whether to automatically assign manual interventions to the current user (default: true)
 AUTO_ASSIGN_INTERVENTIONS = os.environ.get("EASY_MODE_MCP_AUTO_ASSIGN_INTERVENTIONS", "true").lower() == "true"
 
+# Maximum number of Octopus API requests per minute (default: 200). Set to 0 to disable rate limiting.
+RATE_LIMIT_PER_MINUTE = float(os.environ.get("EASY_MODE_MCP_RATE_LIMIT_PER_MINUTE", "200"))
+

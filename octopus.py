@@ -6,13 +6,14 @@ import base64
 import logging
 from collections.abc import Callable, Awaitable
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
 from fastmcp.server.dependencies import get_access_token
 
 from config import OCTOPUS_URL, OCTOPUS_API_KEY, OCTOPUS_SPACE_ID, OCTOPUS_SPACE_NAME, RESOLVE_SPACE_BY_NAME, \
-    AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS, LOG_TAIL, DOWNLOAD_ARTIFACTS, MAX_ARTIFACT_SIZE
+    AUTH_TYPE, AUTH_ENABLED, VERBOSE_LOGS, LOG_TAIL, DOWNLOAD_ARTIFACTS, MAX_ARTIFACT_SIZE, RATE_LIMIT_PER_MINUTE
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,108 @@ def _raise_for_status(resp: httpx.Response) -> None:
 
 
 USER_AGENT = "McpEasyMode"
+
+# How many times to retry a request that returns HTTP 429 before giving up.
+MAX_RETRIES_429 = 5
+# Fallback delay (seconds) to sleep on a 429 when no Retry-After header is present.
+DEFAULT_RETRY_AFTER = 5.0
+
+
+def _parse_retry_after(value: str | None) -> float:
+    """Parse a Retry-After header value into a number of seconds to sleep.
+
+    Supports both the delay-seconds and HTTP-date forms. Falls back to
+    DEFAULT_RETRY_AFTER when the header is missing or unparseable.
+    """
+    if not value:
+        return DEFAULT_RETRY_AFTER
+
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        pass
+
+    try:
+        retry_dt = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return DEFAULT_RETRY_AFTER
+
+    if retry_dt.tzinfo is None:
+        retry_dt = retry_dt.replace(tzinfo=timezone.utc)
+    delta = (retry_dt - datetime.now(timezone.utc)).total_seconds()
+    return max(delta, 0.0)
+
+
+class AsyncRateLimiter:
+    """A token-bucket rate limiter shared across all Octopus API clients.
+
+    Enforces an average of `rate_per_minute` requests per minute while allowing
+    short bursts up to that many requests. A rate of 0 (or less) disables limiting.
+    """
+
+    def __init__(self, rate_per_minute: float):
+        self._capacity = rate_per_minute
+        self._tokens = rate_per_minute
+        self._refill_per_second = rate_per_minute / 60.0
+        self._updated_at: float | None = None
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        """Block until a request token is available, then consume it."""
+        if self._capacity <= 0:
+            return
+
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            if self._updated_at is None:
+                self._updated_at = now
+
+            # Refill tokens based on the time elapsed since the last acquire.
+            elapsed = now - self._updated_at
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_per_second)
+            self._updated_at = now
+
+            if self._tokens < 1:
+                # Not enough for a whole token; sleep until one has accrued.
+                wait = (1 - self._tokens) / self._refill_per_second
+                await asyncio.sleep(wait)
+                self._tokens = 0.0
+                self._updated_at = loop.time()
+            else:
+                self._tokens -= 1
+
+
+# Shared limiter for every request made through RetryingAsyncClient.
+_rate_limiter = AsyncRateLimiter(RATE_LIMIT_PER_MINUTE)
+
+
+class RetryingAsyncClient(httpx.AsyncClient):
+    """An httpx.AsyncClient that rate-limits and retries Octopus API requests.
+
+    Every request is throttled through the shared token-bucket rate limiter, and
+    a request that returns HTTP 429 (Too Many Requests) is retried after sleeping
+    (honouring the Retry-After header when present), up to MAX_RETRIES_429 times.
+    All request methods (get/post/put/...) funnel through send(), so overriding it
+    covers every request made with this client.
+    """
+
+    async def send(self, request: httpx.Request, **kwargs) -> httpx.Response:
+        attempt = 0
+        while True:
+            await _rate_limiter.acquire()
+            response = await super().send(request, **kwargs)
+            if response.status_code != 429 or attempt >= MAX_RETRIES_429:
+                return response
+
+            attempt += 1
+            retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+            logger.warning(
+                "Received 429 Too Many Requests for %s; retrying in %.1fs (attempt %d/%d)",
+                request.url, retry_after, attempt, MAX_RETRIES_429,
+            )
+            await response.aclose()
+            await asyncio.sleep(retry_after)
 
 
 def octopus_headers(bearer_token: str | None = None) -> dict[str, str]:
@@ -58,7 +161,7 @@ async def exchange_token_for_octopus_token(id_token: str) -> str:
     Raises:
         RuntimeError: If the token exchange fails or no access token is returned.
     """
-    async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}) as client:
+    async with RetryingAsyncClient(headers={"User-Agent": USER_AGENT}) as client:
         response = await client.post(
             f"{OCTOPUS_URL}/token/v1",
             json={
@@ -127,7 +230,7 @@ async def refresh_space_id() -> str:
     if not RESOLVE_SPACE_BY_NAME:
         return OCTOPUS_SPACE_ID
 
-    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
         space_id = await _resolve_space_id_from_name(client, OCTOPUS_SPACE_NAME)
 
     if space_id != OCTOPUS_SPACE_ID:
@@ -140,7 +243,7 @@ async def refresh_space_id() -> str:
 async def get_all_runbooks() -> list[dict]:
     """Fetch all runbooks from the Octopus space (database-backed and config-as-code)."""
     runbooks = []
-    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
         # Fetch all database-backed runbooks (published and unpublished)
         runbooks.extend(await _get_all_database_runbooks(client))
 
@@ -210,7 +313,7 @@ async def _get_all_database_runbooks(client: httpx.AsyncClient) -> list[dict]:
 
 async def get_project_branches(project_id: str) -> list[str]:
     """Fetch the list of git branch names for a config-as-code project."""
-    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
         resp = await client.get(
             f"/api/{OCTOPUS_SPACE_ID}/projects/{project_id}/git/branches",
             params={"skip": 0, "take": 2147483647},
@@ -266,7 +369,7 @@ async def get_project_prompted_variables(project_id: str, git_ref: str | None = 
     For CaC projects, uses the git ref endpoint. For database-backed projects,
     uses the variable set endpoint.
     """
-    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
         if git_ref:
             # CaC projects store variables in git
             encoded_ref = f"refs/heads/{git_ref}".replace("/", "%2F")
@@ -964,7 +1067,7 @@ async def get_published_snapshot_id(client: httpx.AsyncClient, runbook_id: str) 
 
 async def get_environments() -> list[dict]:
     """Fetch all environments from the Octopus space."""
-    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
         resp = await client.get(
             f"/api/{OCTOPUS_SPACE_ID}/environments",
             params={"take": 1000},
@@ -991,7 +1094,7 @@ async def get_runbook_environments(runbook: dict) -> list[dict]:
     if not project_id or not slug:
         return []
 
-    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
         if git_ref:
             # Config-as-code runbook
             encoded_ref = f"refs/heads/{git_ref}".replace("/", "%2F")
@@ -1014,7 +1117,7 @@ async def get_runbook_environments(runbook: dict) -> list[dict]:
 async def get_project_ids_by_names(project_names: list[str]) -> set[str]:
     """Fetch project IDs for the given project names."""
     project_ids = set()
-    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=octopus_headers()) as client:
         for name in project_names:
             resp = await client.get(
                 f"/api/{OCTOPUS_SPACE_ID}/projects",
@@ -1156,7 +1259,7 @@ async def run_runbook(runbook_id: str, environment_id: str, variable_values: dic
     """Trigger a runbook run and poll for completion, returning the final task status."""
     headers = await get_authenticated_headers()
 
-    async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
         try:
             if is_cac:
                 # Config-as-code runbooks use a different run endpoint
@@ -1211,7 +1314,7 @@ async def resolve_tenant_for_tool(tenant_name: str | None, is_tenanted: bool, mu
 
     if tenant_name:
         headers = await get_authenticated_headers()
-        async with httpx.AsyncClient(base_url=OCTOPUS_URL, headers=headers) as tenant_client:
+        async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=headers) as tenant_client:
             resolved_tenant_id, error = await resolve_tenant(tenant_client, tenant_name, project_id, env_id)
             if error:
                 return None, {"status": "Failed", "error": error}
