@@ -1153,6 +1153,11 @@ def parse_interruption_form(interruption: dict) -> tuple[str, str | None, str | 
     return instructions, notes_element_id, result_element_id
 
 
+def _normalize_form_values(form_values: dict[str, str | None]) -> dict[str, str]:
+    """Convert None values to empty strings in form_values dict to avoid sending null to the API."""
+    return {k: v if v is not None else "" for k, v in form_values.items()}
+
+
 def map_variables_to_form_values(variable_values: dict[str, str], elements: list[dict], form_values: dict[str, str]) -> dict[str, str]:
     """Map variable names to form element IDs, overriding default form values.
 
@@ -1182,7 +1187,7 @@ def map_variables_to_form_values(variable_values: dict[str, str], elements: list
             f"Elements: {[(e.get('Name'), e.get('Control', {}).get('Label'), e.get('Control', {}).get('Name')) for e in elements]}"
         )
 
-    return form_values
+    return _normalize_form_values(form_values)
 
 
 def build_task_result(task: dict, task_id: str, log_text: str, artifacts: list[dict] | None = None) -> dict:
@@ -1266,7 +1271,7 @@ async def run_runbook(runbook_id: str, environment_id: str, variable_values: dic
                 form_values = {}
                 if variable_values:
                     # For CaC runbooks, map variable names directly as form values
-                    form_values = dict(variable_values)
+                    form_values = _normalize_form_values(dict(variable_values))
 
                 # Resolve latest package versions for the runbook
                 selected_packages = await resolve_selected_packages(client, project_id, git_ref, runbook_slug)
