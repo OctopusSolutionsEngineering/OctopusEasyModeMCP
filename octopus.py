@@ -1260,6 +1260,116 @@ def _permission_denied_result(exc: httpx.HTTPStatusError) -> dict:
     }
 
 
+async def start_runbook(runbook_id: str, environment_id: str, variable_values: dict[str, str] | None = None, tenant_id: str | None = None, project_id: str | None = None, is_cac: bool = False, git_ref: str | None = None, runbook_slug: str | None = None) -> str:
+    """Start a runbook run and return the task ID without waiting for completion.
+
+    Args:
+        runbook_id: The runbook to run
+        environment_id: The environment to run in
+        variable_values: Optional dict of variable values
+        tenant_id: Optional tenant ID for tenanted runs
+        project_id: Optional project ID (required for CaC)
+        is_cac: Whether this is a config-as-code runbook
+        git_ref: Optional git reference (CaC only)
+        runbook_slug: Optional runbook slug (CaC only)
+
+    Returns:
+        The task ID of the started runbook run.
+    """
+    headers = await get_authenticated_headers()
+
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
+        try:
+            if is_cac:
+                form_values = {}
+                if variable_values:
+                    form_values = _normalize_form_values(dict(variable_values))
+
+                selected_packages = await resolve_selected_packages(client, project_id, git_ref, runbook_slug)
+
+                task_id = await create_cac_runbook_run(
+                    client, project_id, git_ref, runbook_slug,
+                    environment_id, form_values=form_values, tenant_id=tenant_id,
+                    selected_packages=selected_packages,
+                )
+            else:
+                published_snapshot_id = await get_published_snapshot_id(client, runbook_id)
+
+                if published_snapshot_id:
+                    snapshot_id = published_snapshot_id
+                else:
+                    selected_packages = await resolve_db_runbook_packages(client, runbook_id)
+                    if selected_packages:
+                        snapshot_id = await create_runbook_snapshot(client, runbook_id, selected_packages)
+                    else:
+                        snapshot_id = await create_runbook_snapshot(client, runbook_id, [])
+
+                form_values = {}
+                if variable_values:
+                    form_values = await build_form_values(client, snapshot_id, environment_id, variable_values)
+
+                task_id = await create_runbook_run(client, runbook_id, snapshot_id, environment_id, form_values, tenant_id=tenant_id)
+
+            return task_id
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                raise ValueError(_permission_denied_result(e)["error"])
+            raise
+
+
+async def get_task_state(task_id: str) -> dict:
+    """Fetch the current state of a task.
+
+    Args:
+        task_id: The task ID to check
+
+    Returns:
+        A dict with the task state and summary information.
+    """
+    headers = await get_authenticated_headers()
+
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
+        task = await get_task_status(client, task_id)
+        return {
+            "taskId": task_id,
+            "state": task.get("State"),
+            "description": task.get("Description", ""),
+            "hasPendingInterruptions": task.get("HasPendingInterruptions", False),
+            "isCompleted": task.get("State") in ("Success", "Failed", "Canceled", "TimedOut"),
+            "duration": task.get("Duration", ""),
+            "errorMessage": task.get("ErrorMessage", ""),
+        }
+
+
+async def get_task_result(task_id: str) -> dict:
+    """Fetch the final result of a completed task including logs and artifacts.
+
+    Args:
+        task_id: The task ID to fetch results for
+
+    Returns:
+        A dict with status, logs, and artifacts.
+    """
+    headers = await get_authenticated_headers()
+
+    async with RetryingAsyncClient(base_url=OCTOPUS_URL, headers=headers) as client:
+        task = await get_task_status(client, task_id)
+        state = task.get("State")
+
+        if state not in ("Success", "Failed", "Canceled", "TimedOut"):
+            return {
+                "taskId": task_id,
+                "status": "Incomplete",
+                "state": state,
+                "error": f"Task {task_id} has not completed yet. Current state: {state}",
+            }
+
+        log_text = await get_task_details_log(client, task_id)
+        artifacts = await get_task_artifacts(client, task_id)
+
+        return build_task_result(task, task_id, log_text, artifacts)
+
+
 async def run_runbook(runbook_id: str, environment_id: str, variable_values: dict[str, str] | None = None, intervention_handler: InterventionHandler | None = None, tenant_id: str | None = None, project_id: str | None = None, is_cac: bool = False, git_ref: str | None = None, runbook_slug: str | None = None) -> dict:
     """Trigger a runbook run and poll for completion, returning the final task status."""
     headers = await get_authenticated_headers()

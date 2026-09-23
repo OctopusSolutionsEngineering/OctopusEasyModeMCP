@@ -35,6 +35,9 @@ from octopus import (
     take_interruption_responsibility,
     parse_interruption_form,
     run_runbook,
+    start_runbook,
+    get_task_state,
+    get_task_result,
     refresh_space_id,
     resolve_tenant_for_tool,
 )
@@ -584,14 +587,55 @@ def _register_runbook_tool(runbook: dict, environments: list[dict], prompted_var
 
     mcp.tool(name=tool_name, description=description, task=task_config)(run_tool)
 
+    # Register the async version of the tool
+    async_tool_name = f"{tool_name}_async"
+    async_description = f"{description} (async - returns task ID, does not wait for completion)"
+
+    async def run_tool_async(**kwargs) -> dict:
+        """Async version - starts the runbook and returns task ID"""
+        ctx = kwargs.pop("ctx", None)
+        kwargs = _unwrap_enums(kwargs)
+        env_id, env_error = await _resolve_tool_environment(kwargs, environments, single_env, env_help)
+        if env_error:
+            return env_error
+
+        variable_values, var_error = await _collect_variable_values(kwargs, param_to_var, ctx, use_var_id=is_cac)
+        if var_error:
+            return var_error
+
+        _inject_session_id(variable_values, session_id_var, ctx, is_cac)
+
+        resolved_tenant_id, tenant_error = await resolve_tenant_for_tool(kwargs.get("tenant_name"), is_tenanted, multi_tenancy_mode, project_id, env_id)
+        if tenant_error:
+            return tenant_error
+
+        effective_git_ref = kwargs.get("git_ref", default_git_ref) if is_cac else default_git_ref
+
+        try:
+            task_id = await start_runbook(runbook_id, env_id, variable_values if variable_values else None, tenant_id=resolved_tenant_id, project_id=project_id, is_cac=is_cac, git_ref=effective_git_ref, runbook_slug=runbook_slug)
+            return {
+                "status": "Started",
+                "taskId": task_id,
+                "description": f"Runbook '{runbook_name}' started with task ID {task_id}. Use get_task_state to poll status or get_task_result to fetch results when complete.",
+            }
+        except ValueError as e:
+            return {"status": "Failed", "error": str(e)}
+
+    run_tool_async.__doc__ = _build_tool_docstring(async_description, project_id, env_help, single_env, is_tenanted, multi_tenancy_mode, param_to_var, is_cac=is_cac, default_git_ref=default_git_ref)
+    run_tool_async.__name__ = async_tool_name
+    run_tool_async.__signature__ = inspect.Signature(params)
+    run_tool_async.__annotations__ = _build_tool_annotations(single_env, environment_enum, is_tenanted, multi_tenancy_mode, param_to_var, is_cac=is_cac, BranchEnum=branch_enum)
+
+    mcp.tool(name=async_tool_name, description=async_description)(run_tool_async)
 
     # If docket is already running (dynamic refresh after startup), register the
-    # new tool so background-task execution can find it by key.
+    # new tools so background-task execution can find them by key.
     if mcp._docket is not None:
-        tool_key = f"tool:{tool_name}@"
-        tool_obj = mcp.local_provider._components.get(tool_key)
-        if tool_obj:
-            tool_obj.register_with_docket(mcp._docket)
+        for name in [tool_name, async_tool_name]:
+            tool_key = f"tool:{name}@"
+            tool_obj = mcp.local_provider._components.get(tool_key)
+            if tool_obj:
+                tool_obj.register_with_docket(mcp._docket)
 
 
 def _resolve_task_config(runbook_tags: list[str]) -> TaskConfig:
@@ -783,8 +827,59 @@ async def update_tools(ctx: Context) -> dict:
     return {"status": "Notified", "added": added, "removed": removed}
 
 
+@mcp.tool(
+    name="get_task_state",
+    description="Get the current state of a running or completed task.",
+)
+async def get_task_state_tool(task_id: str) -> dict:
+    """Fetch the current state of a task started by an async runbook tool.
+
+    Args:
+        task_id: The task ID returned by an async runbook tool
+
+    Returns:
+        A dict containing the task state, whether it's completed, and other metadata.
+    """
+    try:
+        return await get_task_state(task_id)
+    except Exception as e:
+        logger.exception(f"Failed to get task state for {task_id}")
+        return {
+            "taskId": task_id,
+            "status": "Error",
+            "error": f"Failed to fetch task state: {str(e)}",
+        }
+
+
+@mcp.tool(
+    name="get_task_result",
+    description="Get the logs and artifacts from a completed task.",
+)
+async def get_task_result_tool(task_id: str) -> dict:
+    """Fetch the final result (logs and artifacts) of a completed task.
+
+    Only works on tasks that have reached a terminal state (Success, Failed, Canceled, or TimedOut).
+
+    Args:
+        task_id: The task ID returned by an async runbook tool
+
+    Returns:
+        A dict containing status, logs, and artifacts. If the task is not yet complete,
+        returns an error indicating the current state.
+    """
+    try:
+        return await get_task_result(task_id)
+    except Exception as e:
+        logger.exception(f"Failed to get task result for {task_id}")
+        return {
+            "taskId": task_id,
+            "status": "Error",
+            "error": f"Failed to fetch task result: {str(e)}",
+        }
+
+
 # Tools that are registered once at startup and survive runbook refreshes
-STATIC_TOOL_NAMES = {"update_tools"}
+STATIC_TOOL_NAMES = {"update_tools", "get_task_state", "get_task_result"}
 
 # Register tools at import time by running the async setup
 asyncio.run(register_all_runbook_tools())
